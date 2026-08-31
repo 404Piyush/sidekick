@@ -1,0 +1,11 @@
+# Built outputs
+build/
+app/build/
+.gradle/
+local.properties
+*.iml
+.idea/
+.kotlin/
+captures/
+.cxx/
+out/
