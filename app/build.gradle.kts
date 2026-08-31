@@ -92,6 +92,8 @@ dependencies {
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     testImplementation("app.cash.turbine:turbine:1.1.0")
     testImplementation("androidx.room:room-testing:2.6.1")
+    testImplementation("androidx.test:core-ktx:1.5.0")
+    testImplementation("androidx.test.ext:junit-ktx:1.1.5")
 
     // Robolectric so in-memory Room can run on the JVM in unit tests
     testImplementation("org.robolectric:robolectric:4.12.2")

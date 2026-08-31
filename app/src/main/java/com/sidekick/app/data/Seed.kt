@@ -10,13 +10,27 @@ import kotlinx.coroutines.withContext
  * One-shot seeding for the teammate library. Idempotent: a second invocation
  * after the table is populated is a no-op.
  *
- * Reads each teammate's system prompt from `assets/system-prompts/{id}.md`,
- * then inserts [TeammateEntity] rows for Coder, Builder, Researcher if and
- * only if the table is currently empty.
+ * Reads each teammate's system prompt from `assets/system-prompts/{id}.md`
+ * via [AssetReader]. Production uses [androidAssets]; tests can inject a
+ * JVM-classloader-backed reader (Robolectric's asset manager doesn't always
+ * see `src/main/assets/` files reliably).
  *
  * Run from the application boot path or lazily from the first DAO call.
  */
 object Seed {
+
+    /**
+     * Indirection over asset reads. Production binds [androidAssets]; tests
+     * can build their own (see TeammateDaoTest).
+     */
+    fun interface AssetReader {
+        fun read(path: String): String
+    }
+
+    /** Production [AssetReader]: reads from `assets/` via [Context.getAssets]. */
+    fun androidAssets(context: Context): AssetReader = AssetReader { path ->
+        context.applicationContext.assets.open(path).bufferedReader().use { it.readText() }
+    }
 
     /**
      * Hard-coded list of teammates shipped with the APK. Slugs MUST match the
@@ -25,21 +39,9 @@ object Seed {
      * `strings.xml` if localisation shows up.
      */
     private val builtInTeammates: List<TeammateSeed> = listOf(
-        TeammateSeed(
-            id = "coder",
-            name = "Coder",
-            tagline = "Refactors Kotlin, reads stack traces.",
-        ),
-        TeammateSeed(
-            id = "builder",
-            name = "Builder",
-            tagline = "Drafts sites, scripts, configs.",
-        ),
-        TeammateSeed(
-            id = "researcher",
-            name = "Researcher",
-            tagline = "Summarizes sources, cites links.",
-        ),
+        TeammateSeed(id = "coder", name = "Coder", tagline = "Refactors Kotlin, reads stack traces."),
+        TeammateSeed(id = "builder", name = "Builder", tagline = "Drafts sites, scripts, configs."),
+        TeammateSeed(id = "researcher", name = "Researcher", tagline = "Summarizes sources, cites links."),
     )
 
     /**
@@ -47,13 +49,25 @@ object Seed {
      *
      * Safe to call repeatedly — the early return on a non-empty table means
      * the only work after the first call is a single Flow emit.
+     *
+     * @param context Required to construct the default [androidAssets] reader
+     *                when the caller doesn't pass one. Pass `null` only if
+     *                you also pass an explicit [reader].
      */
-    suspend fun seedIfEmpty(dao: TeammateDao, context: Context) = withContext(Dispatchers.IO) {
+    suspend fun seedIfEmpty(
+        dao: TeammateDao,
+        context: Context? = null,
+        reader: AssetReader? = null,
+    ) = withContext(Dispatchers.IO) {
+        val activeReader = reader
+            ?: requireNotNull(context) { "seedIfEmpty: pass either context or reader" }
+                .let { androidAssets(it) }
+
         val existing = dao.getAll().first()
         if (existing.isNotEmpty()) return@withContext
 
         builtInTeammates.forEach { seed ->
-            val prompt = readAsset(context, "system-prompts/${seed.id}.md")
+            val prompt = activeReader.read("system-prompts/${seed.id}.md")
             dao.insert(
                 TeammateEntity(
                     id = seed.id,
@@ -64,9 +78,6 @@ object Seed {
             )
         }
     }
-
-    private fun readAsset(context: Context, path: String): String =
-        context.assets.open(path).bufferedReader().use { it.readText() }
 
     private data class TeammateSeed(
         val id: String,
