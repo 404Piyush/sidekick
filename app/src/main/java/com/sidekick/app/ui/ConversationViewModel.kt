@@ -3,26 +3,33 @@ package com.sidekick.app.ui
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import com.sidekick.app.agent.AgentEvent
+import com.sidekick.app.agent.AgentLoop
 import com.sidekick.app.data.ConversationEntity
 import com.sidekick.app.data.ProviderConfigEntity
 import com.sidekick.app.data.Seed
+import com.sidekick.app.data.ToolCallEntity
 import com.sidekick.app.data.TurnEntity
 import com.sidekick.app.data.dao.ConversationDao
 import com.sidekick.app.data.dao.ProviderConfigDao
 import com.sidekick.app.data.dao.TeammateDao
+import com.sidekick.app.data.dao.ToolCallDao
 import com.sidekick.app.data.dao.TurnDao
 import com.sidekick.app.data.provideDatabase
 import com.sidekick.app.provider.ChatMessage
-import com.sidekick.app.provider.LlmChunk
+import com.sidekick.app.provider.LlmClient
 import com.sidekick.app.provider.LlmException
-import com.sidekick.app.provider.LlmRequest
 import com.sidekick.app.provider.LlmRouter
 import com.sidekick.app.provider.Provider
+import com.sidekick.app.tools.ToolContext
+import com.sidekick.app.tools.ToolRegistry
+import com.sidekick.app.tools.builtins.ListDir
+import com.sidekick.app.tools.builtins.ReadFile
+import com.sidekick.app.tools.builtins.TakePhoto
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -32,26 +39,35 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 
 /**
- * ViewModel for [ConversationScreen]. Wraps the provider streaming pipeline
- * and the Room DAOs in a [StateFlow]-backed [ConversationUiState].
+ * ViewModel for [ConversationScreen].
  *
- * Construction is manual (no Hilt in M2). M3 will replace this with a Hilt
- * factory that injects the same DAOs. Tests construct the ViewModel directly
- * with stub DAOs and a fake [LlmRouter].
+ * M3: drives the conversation through [AgentLoop] rather than directly
+ * streaming from the provider. The loop owns the tool-dispatch resume
+ * logic; this ViewModel:
  *
- * Lifecycle: the ViewModel is owned by [ConversationScreen] via
- * `viewModel(factory = ...)`. [start] runs once per conversation (from a
- * [androidx.compose.runtime.LaunchedEffect]) and loads the teammate, the
- * active provider config, and the persisted turns.
+ *  1. Resolves the active provider and materialises a one-shot [LlmClient]
+ *     from the [LlmRouter] cache.
+ *  2. Builds the `messages` list (system prompt + persisted turns).
+ *  3. Constructs a [ToolRegistry] with the three built-in tools.
+ *  4. Calls [AgentLoop.run] and forwards [AgentEvent]s to the UI state.
+ *  5. Persists the assistant turn and any emitted [ToolCallEntity] rows
+ *     so the transcript reflects the full agent run.
+ *
+ * Construction is manual (no Hilt). The factory pattern at the bottom
+ * is what production uses; tests construct the ViewModel directly.
  */
 class ConversationViewModel(
     private val conversationDao: ConversationDao,
     private val turnDao: TurnDao,
+    private val toolCallDao: ToolCallDao,
     private val teammateDao: TeammateDao,
     private val providerConfigDao: ProviderConfigDao,
     private val router: LlmRouter,
     private val teammateSlug: String,
     private val title: String,
+    private val appContext: Context? = null,
+    private val toolRegistryFactory: () -> ToolRegistry = ::defaultToolRegistry,
+    private val agentLoopFactory: (LlmClient, ToolRegistry) -> AgentLoop = { c, r -> AgentLoop(c, r) },
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val ioScope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.IO),
@@ -60,32 +76,26 @@ class ConversationViewModel(
     private val _state = MutableStateFlow(ConversationUiState())
     val state: StateFlow<ConversationUiState> = _state.asStateFlow()
 
-    /**
-     * Currently running streaming Job, if any. Held outside the StateFlow
-     * because the Job itself is the cancellation handle — putting it into
-     * the UI state would be redundant.
-     */
+    /** Currently running streaming Job, if any. */
     @Volatile
     private var streamJob: Job? = null
 
     private var conversationId: Long? = null
 
     /**
-     * Open (or create) the conversation row, load the teammate and provider
-     * config, run [Seed.seedIfEmpty] lazily on first call, and subscribe to
-     * the persisted turn stream. Idempotent — safe to call once from the
-     * screen's `LaunchedEffect`.
+     * Open (or create) the conversation row, load the teammate and
+     * provider config, run [Seed.seedIfEmpty] lazily on first call, and
+     * subscribe to the persisted turn + tool-call streams.
      *
-     * @param context Optional Android context. When provided the seeder
-     *                reads system prompts from `assets/system-prompts/`. Tests
-     *                pass `null` and pre-seed the database directly.
+     * Idempotent — safe to call once from the screen's `LaunchedEffect`.
      */
     fun start(context: Context? = null) {
         if (_state.value.conversationId != null) return
 
         ioScope.launch {
-            if (context != null) {
-                Seed.seedIfEmpty(dao = teammateDao, context = context)
+            val ctx = context ?: appContext
+            if (ctx != null) {
+                Seed.seedIfEmpty(dao = teammateDao, context = ctx)
             }
 
             val teammate = teammateDao.getById(teammateSlug)
@@ -113,27 +123,45 @@ class ConversationViewModel(
             turnDao.getByConversation(cid)
                 .onEach { rows -> _state.value = _state.value.copy(messages = rows) }
                 .launchIn(ioScope)
+
+            // Observe tool calls per turn so the transcript can render
+            // "Coder used read_file(...)" inline. M3 collapses across all
+            // turns in the conversation into a single map.
+            turnDao.getByConversation(cid)
+                .onEach { rows ->
+                    val byTurn = mutableMapOf<Long, List<ToolCallEntity>>()
+                    for (t in rows) {
+                        val calls = toolCallDao.listByTurn(t.id)
+                        if (calls.isNotEmpty()) byTurn[t.id] = calls
+                    }
+                    _state.value = _state.value.copy(toolCallsByTurn = byTurn)
+                }
+                .launchIn(ioScope)
         }
     }
 
     /**
-     * Append [text] as a user turn, then stream the assistant reply.
+     * Append [text] as a user turn, then run the agent loop.
      *
      * Flow:
-     *  1. Insert a `user` turn. The transcript Flow re-emits.
-     *  2. Insert a placeholder `assistant` turn (empty content).
-     *  3. Call [LlmRouter.stream] and pipe chunks through a [Channel] so the
-     *     provider callback stays non-suspend (it can't call Room APIs).
-     *  4. Drain the channel on the main coroutine, persisting each chunk
-     *     into the placeholder turn.
-     *  5. On error, persist an error message and surface [LlmException].
+     *  1. Insert a `user` turn.
+     *  2. Resolve provider + system prompt + history into `messages`.
+     *  3. Construct the tool registry + AgentLoop.
+     *  4. Run the loop, forwarding `AgentEvent`s to the UI state.
+     *  5. Persist each tool call as a [ToolCallEntity].
+     *  6. On `TextDone`, persist the assistant `TurnEntity` with the
+     *     accumulated text. On `MaxIterationsExceeded`, persist an
+     *     "[error] max iterations" assistant turn. On `Error`, persist
+     *     an "[error] …" assistant turn and surface the exception in
+     *     state.
      */
     fun sendMessage(text: String) {
         val cid = conversationId ?: return
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
+        val ctx = appContext ?: return
 
-        ioScope.launch {
+        streamJob = ioScope.launch {
             // 1. Persist user turn.
             val position = turnDao.countByConversation(cid)
             val now = clock()
@@ -149,9 +177,11 @@ class ConversationViewModel(
             conversationDao.touch(cid, now)
             _state.value = _state.value.copy(error = null)
 
-            // 2. Insert placeholder assistant turn.
+            // 2. Insert the assistant placeholder turn up-front so tool
+            //    calls emitted during this run can be FK-attached to it.
+            //    The final text lands here in step 6 via update().
             val assistantPosition = position + 1
-            val assistantId = turnDao.insert(
+            val assistantTurnId = turnDao.insert(
                 TurnEntity(
                     conversationId = cid,
                     role = "assistant",
@@ -160,7 +190,6 @@ class ConversationViewModel(
                     createdAt = clock(),
                 ),
             )
-            _state.value = _state.value.copy(isStreaming = true, partialResponse = "")
 
             // 3. Resolve provider + system prompt + history.
             val activeConfig = providerConfigDao.getActive()
@@ -176,104 +205,203 @@ class ConversationViewModel(
             }
             val provider: Provider = activeConfig?.toProvider()
                 ?: run {
-                    finishWithError(
-                        cid = cid,
-                        assistantId = assistantId,
-                        position = assistantPosition,
-                        err = LlmException.Network("No active provider configured"),
-                    )
+                    finishWithError(cid, assistantTurnId, assistantPosition, LlmException.Network("No active provider configured"))
                     return@launch
                 }
-            val request = LlmRequest(messages = messages)
 
-            // 4. Stream via a channel — keeps the provider callback non-suspend.
-            val chunkChannel = Channel<StreamEvent>(capacity = Channel.UNLIMITED)
-            val producerJob = ioScope.launch {
-                try {
-                    router.stream(provider, request) { chunk ->
-                        chunkChannel.trySend(StreamEvent.Chunk(chunk))
-                    }
-                } catch (t: Throwable) {
-                    chunkChannel.trySend(StreamEvent.Failure(t))
-                } finally {
-                    chunkChannel.close()
-                }
+            // 4. Construct the tool registry and agent loop. We materialise
+            //    the LlmClient from the router up-front so a router cache
+            //    miss surfaces here (rather than mid-stream).
+            val client = try {
+                router.clientFor(provider)
+            } catch (t: Throwable) {
+                finishWithError(cid, assistantTurnId, assistantPosition, t.toLlmException())
+                return@launch
             }
-            streamJob = producerJob
+            val registry = toolRegistryFactory()
+            val loop = agentLoopFactory(client, registry)
 
-            // Hold a local copy of the assistant turn so we can update it
-            // without re-querying Room on every chunk (the Flow collector
-            // would race with our writes).
+            // 5. Run the loop.
+            _state.value = _state.value.copy(isStreaming = true, partialResponse = "")
+
+            var failure: LlmException? = null
+            val partialBuilder = StringBuilder()
             var assistantTurn = TurnEntity(
-                id = assistantId,
+                id = assistantTurnId,
                 conversationId = cid,
                 role = "assistant",
                 content = "",
                 position = assistantPosition,
                 createdAt = clock(),
             )
+            // Buffer tool-call events so we can persist them after the
+            // loop returns (the loop's onEvent callback is non-suspend;
+            // mutating Room requires suspend). The agent loop emits
+            // ToolCall before ToolResult for the same id, so we keep both
+            // in order and pair them by sequence.
+            val toolEvents = mutableListOf<ToolEvent>()
 
-            val collected = StringBuilder()
-            var failure: Throwable? = null
-            for (event in chunkChannel) {
-                when (event) {
-                    is StreamEvent.Chunk -> when (val chunk = event.chunk) {
-                        is LlmChunk.Text -> {
-                            collected.append(chunk.delta)
-                            val snapshot = collected.toString()
-                            val updated = assistantTurn.copy(content = snapshot)
-                            turnDao.update(updated)
-                            assistantTurn = updated
+            val toolCtx = ToolContext(appContext = ctx, sessionId = cid)
+            try {
+                loop.run(messages, registry.descriptors(), toolCtx) { event ->
+                    when (event) {
+                        is AgentEvent.TextDelta -> {
+                            partialBuilder.append(event.delta)
+                            val snapshot = partialBuilder.toString()
                             _state.value = _state.value.copy(partialResponse = snapshot)
+                            assistantTurn = assistantTurn.copy(content = snapshot)
+                            // Inline Room update; onEvent is called from
+                            // a coroutine context (the agent loop uses
+                            // Dispatchers.Unconfined for the callback),
+                            // so a non-suspend update would be a race —
+                            // we push the update to ioScope instead.
+                            ioScope.launch {
+                                turnDao.update(assistantTurn)
+                            }
                         }
-                        is LlmChunk.Done -> {
-                            // Final token accounting ignored for now (M3 will surface it).
+                        is AgentEvent.ToolCall -> {
+                            toolEvents.add(ToolEvent.Call(event.name, event.args, event.callId))
                         }
-                    }
-                    is StreamEvent.Failure -> {
-                        failure = event.throwable
+                        is AgentEvent.ToolResult -> {
+                            toolEvents.add(ToolEvent.Result(event.name, event.result, event.callId))
+                        }
+                        is AgentEvent.TextDone -> {
+                            partialBuilder.clear()
+                            val finalText = event.fullText
+                            assistantTurn = assistantTurn.copy(content = finalText)
+                            ioScope.launch {
+                                turnDao.update(assistantTurn)
+                            }
+                        }
+                        is AgentEvent.Error -> {
+                            failure = event.error.toLlmException()
+                        }
+                        is AgentEvent.MaxIterationsExceeded -> {
+                            failure = LlmException.Network(
+                                "agent loop exceeded ${event.max} iterations",
+                            )
+                        }
                     }
                 }
+            } catch (t: Throwable) {
+                failure = t.toLlmException()
             }
-            producerJob.join()
-            streamJob = null
 
-            if (failure != null) {
-                val llm = failure.toLlmException()
-                finishWithError(cid, assistantId, assistantPosition, llm)
+            // Persist tool-call rows after the loop completes. We pair
+            // each ToolEvent.Call with the next ToolEvent.Result that
+            // shares its callId; if no result is recorded (the model
+            // emitted a call but the loop aborted before dispatching),
+            // we still record the call with a null result.
+            val paired = pairToolEvents(toolEvents)
+            for ((call, result) in paired) {
+                val callId = toolCallDao.insert(
+                    ToolCallEntity(
+                        turnId = assistantTurnId,
+                        toolName = call.name,
+                        argsJson = call.args.toString(),
+                        resultJson = null,
+                        createdAt = clock(),
+                    ),
+                )
+                if (result != null) {
+                    val inner = result.result
+                    val json = when (inner) {
+                        is com.sidekick.app.tools.ToolResult.Ok ->
+                            "{\"ok\":${jsonString(inner.output)}}"
+                        is com.sidekick.app.tools.ToolResult.Err ->
+                            "{\"err\":${jsonString(inner.message)}}"
+                    }
+                    toolCallDao.setResult(callId, json)
+                }
+            }
+
+            val finalFailure = failure
+            if (finalFailure != null) {
+                finishWithError(cid, assistantTurnId, assistantPosition, finalFailure)
                 return@launch
             }
 
+            // 6. Final touch-up: bump conversation's updatedAt and clear
+            //    streaming state.
             conversationDao.touch(cid, clock())
-            _state.value = _state.value.copy(isStreaming = false, partialResponse = "")
+            _state.value = _state.value.copy(
+                isStreaming = false,
+                partialResponse = "",
+            )
         }
     }
 
-    private suspend fun finishWithError(
-        cid: Long,
-        assistantId: Long,
-        position: Int,
-        err: LlmException,
-    ) {
-        val current = turnDao.getByConversation(cid).first()
-        val existing = current.firstOrNull { it.id == assistantId }
-        val errorText = "[error] " + (err.message ?: err::class.simpleName.orEmpty())
-        if (existing != null) {
-            turnDao.update(existing.copy(content = errorText))
-        } else {
-            // Fallback — should never happen because sendMessage inserts it first.
-            turnDao.insert(
-                TurnEntity(
-                    id = assistantId,
-                    conversationId = cid,
-                    role = "assistant",
-                    content = errorText,
-                    position = position,
-                    createdAt = clock(),
-                ),
-            )
+    /**
+     * Pair tool-call events with their results in arrival order. The
+     * agent loop emits one Call followed by one Result for each
+     * dispatch; we pair by that order, falling back to unmatched Call
+     * rows when a Result is missing (e.g. on MaxIterationsExceeded).
+     */
+    private fun pairToolEvents(events: List<ToolEvent>): List<Pair<ToolEvent.Call, ToolEvent.Result?>> {
+        val out = mutableListOf<Pair<ToolEvent.Call, ToolEvent.Result?>>()
+        var pendingCall: ToolEvent.Call? = null
+        for (e in events) {
+            when (e) {
+                is ToolEvent.Call -> {
+                    // Close out any previous unmatched call (no result yet).
+                    pendingCall?.let { out.add(it to null) }
+                    pendingCall = e
+                }
+                is ToolEvent.Result -> {
+                    val pc = pendingCall
+                    if (pc != null) {
+                        out.add(pc to e)
+                        pendingCall = null
+                    }
+                    // Result without a Call — drop on the floor; shouldn't happen.
+                }
+            }
         }
-        _state.value = _state.value.copy(isStreaming = false, partialResponse = "", error = err)
+        pendingCall?.let { out.add(it to null) }
+        return out
+    }
+
+    /**
+     * Internal carrier for tool-call events buffered during a single
+     * agent-loop run. The ViewModel needs to pair Calls with their
+     * Results before persisting [ToolCallEntity] rows.
+     */
+    private sealed class ToolEvent {
+        data class Call(
+            val name: String,
+            val args: kotlinx.serialization.json.JsonObject,
+            val callId: String,
+        ) : ToolEvent()
+        data class Result(
+            val name: String,
+            val result: com.sidekick.app.tools.ToolResult,
+            val callId: String,
+        ) : ToolEvent()
+    }
+
+    /**
+     * Persist an "[error] ..." assistant turn and surface the failure in
+     * UI state. The assistant turn was inserted up-front in [sendMessage],
+     * so we update its content rather than inserting again.
+     */
+    private suspend fun finishWithError(cid: Long, assistantTurnId: Long, position: Int, err: LlmException) {
+        val errorText = "[error] " + (err.message ?: err::class.simpleName.orEmpty())
+        turnDao.update(
+            TurnEntity(
+                id = assistantTurnId,
+                conversationId = cid,
+                role = "assistant",
+                content = errorText,
+                position = position,
+                createdAt = clock(),
+            ),
+        )
+        conversationDao.touch(cid, clock())
+        _state.value = _state.value.copy(
+            isStreaming = false,
+            partialResponse = "",
+            error = err,
+        )
     }
 
     /**
@@ -304,6 +432,14 @@ class ConversationViewModel(
 
     companion object {
         /**
+         * Default tool registry for production — the three built-in tools
+         * defined in [com.sidekick.app.tools.builtins]. M4 will extend
+         * with image-tools; tests inject their own factory.
+         */
+        fun defaultToolRegistry(): ToolRegistry =
+            ToolRegistry(listOf(ReadFile(), ListDir(), TakePhoto()))
+
+        /**
          * Manual factory for production. Loads the database via
          * [provideDatabase]. Seeding happens lazily on the first [start] call.
          */
@@ -311,15 +447,18 @@ class ConversationViewModel(
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                    val db = provideDatabase(context.applicationContext)
+                    val app = context.applicationContext
+                    val db = provideDatabase(app)
                     return ConversationViewModel(
                         conversationDao = db.conversationDao(),
                         turnDao = db.turnDao(),
+                        toolCallDao = db.toolCallDao(),
                         teammateDao = db.teammateDao(),
                         providerConfigDao = db.providerConfigDao(),
                         router = LlmRouter(),
                         teammateSlug = teammateSlug,
                         title = title,
+                        appContext = app,
                     ) as T
                 }
             }
@@ -327,17 +466,27 @@ class ConversationViewModel(
 }
 
 /**
- * Internal channel event used to ferry either an [LlmChunk] from the
- * provider or a caught [Throwable] across the suspend boundary.
+ * Internal helper used by the ViewModel to coerce caught throwables into
+ * [LlmException]. Same shape as the M2 helper but lives in the UI module.
  */
-private sealed class StreamEvent {
-    data class Chunk(val chunk: LlmChunk) : StreamEvent()
-    data class Failure(val throwable: Throwable) : StreamEvent()
-}
-
 private fun Throwable.toLlmException(): LlmException = when (this) {
     is LlmException -> this
     else -> LlmException.Network(message ?: this::class.simpleName.orEmpty(), this)
+}
+
+/**
+ * Wrap [s] as a JSON string literal (with escapes for the special chars
+ * that show up in tool output). Used by the ViewModel to serialise
+ * [com.sidekick.app.tools.ToolResult] into a flat JSON column.
+ */
+private fun jsonString(s: String): String {
+    val escaped = s
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    return "\"$escaped\""
 }
 
 /**
