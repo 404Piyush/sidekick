@@ -1,5 +1,7 @@
 package com.sidekick.app.provider
 
+import com.sidekick.app.tools.ToolDescriptor
+
 /**
  * A single turn in a chat conversation. [role] is one of
  *  - `"system"` — instruction that primes the model's behaviour
@@ -24,10 +26,15 @@ data class ChatMessage(
  * @property stream Whether to stream deltas. M1 always sets this to `true`; the
  *                  field is left explicit so a future non-streaming code path
  *                  can flip it without changing call sites.
+ * @property tools Tool schemas to advertise to the model. `null` or empty
+ *                 means "no tools available" — OpenAI's request body
+ *                 omits the `tools` field in that case. The agent loop
+ *                 populates this from the active [com.sidekick.app.tools.ToolRegistry].
  */
 data class LlmRequest(
     val messages: List<ChatMessage>,
     val temperature: Double = 0.7,
     val maxTokens: Int? = null,
     val stream: Boolean = true,
+    val tools: List<ToolDescriptor>? = null,
 )
