@@ -18,7 +18,7 @@ import kotlinx.coroutines.SupervisorJob
  * The default [scope] uses a [SupervisorJob] so a failure in one streaming
  * call doesn't tear down sibling calls.
  */
-class LlmRouter(
+open class LlmRouter(
     private val ollamaFactory: (Provider.LocalOllama) -> LlmClient = { OllamaProvider(it.baseUrl, it.modelName) },
     private val openAiFactory: (Provider.CloudOpenAI) -> LlmClient = {
         OpenAiProvider(it.apiBaseUrl, it.apiKey, it.modelName)
@@ -28,11 +28,11 @@ class LlmRouter(
     private val cache = mutableMapOf<Provider, LlmClient>()
 
     /** Eagerly evict a provider's cached client — used when settings change. */
-    fun invalidate(provider: Provider) {
+    open fun invalidate(provider: Provider) {
         cache.remove(provider)
     }
 
-    fun clientFor(provider: Provider): LlmClient = when (provider) {
+    open fun clientFor(provider: Provider): LlmClient = when (provider) {
         is Provider.LocalOllama -> cache.getOrPut(provider) { ollamaFactory(provider) }
         is Provider.CloudOpenAI -> cache.getOrPut(provider) { openAiFactory(provider) }
     }
@@ -41,7 +41,7 @@ class LlmRouter(
      * Stream from the given [provider]. The returned [Job] is the provider's
      * own coroutine handle — cancelling it cancels the in-flight HTTP call.
      */
-    suspend fun stream(
+    open suspend fun stream(
         provider: Provider,
         request: LlmRequest,
         onChunk: (LlmChunk) -> Unit,
