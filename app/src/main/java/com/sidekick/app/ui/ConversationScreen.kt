@@ -29,80 +29,59 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import com.sidekick.app.provider.LlmChunk
-import com.sidekick.app.provider.LlmException
-import com.sidekick.app.provider.LlmRequest
-import com.sidekick.app.provider.LlmRouter
-import com.sidekick.app.provider.Provider
-import com.sidekick.app.provider.ChatMessage
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.sidekick.app.data.ProviderConfigEntity
+import com.sidekick.app.data.TurnEntity
 import com.sidekick.app.ui.theme.SidekickTheme
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
 
 /**
- * Streaming conversation screen wired to [LlmRouter] for M1.
+ * Streaming conversation screen wired to [ConversationViewModel] for M2.
  *
- * Persisted settings (DataStore) arrive in M2. For now the user's choices
- * live only for the lifetime of this screen and are surfaced through the
- * Settings sheet — entered on first run, mutated any time the icon is tapped.
+ * Reads everything from [ConversationUiState] (a [kotlinx.coroutines.flow.StateFlow])
+ * and dispatches user input via `viewModel.sendMessage(...)`. No in-memory
+ * `mutableStateListOf` for messages, no `mutableStateOf<Provider>` for
+ * settings — both are owned by the ViewModel now.
+ *
+ * Manual factory injection (no Hilt in M2). M3 swaps in a Hilt factory.
  */
-
-/** Mutable settings shared between the main view and the settings sheet. */
-class ConversationSettings(
-    initialProvider: Provider = Provider.LocalOllama(),
-) {
-    var provider: Provider by mutableStateOf(initialProvider)
-    var systemPrompt: String by mutableStateOf("You are a helpful assistant.")
-}
-
-/** One chat turn — user or assistant — rendered in the LazyColumn. */
-private data class Turn(
-    val role: String,
-    val text: String,
-)
-
-/**
- * Hardcoded teammate system prompts for M1. M3 replaces these with files
- * shipped in the assets directory so the prompt library is editable
- * without rebuilding the APK.
- */
-private fun systemPromptFor(teammateTitle: String): String = when (teammateTitle) {
-    "Coder" -> "You are Coder. You write Kotlin and refactor Android code. Be terse."
-    "Builder" -> "You are Builder. You draft HTML, scripts, and configs. Be concrete."
-    "Researcher" -> "You are Researcher. You summarize sources and cite links. Be neutral."
-    else -> "You are ${teammateTitle}."
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConversationScreen(
+    teammateSlug: String,
     teammateTitle: String,
-    router: LlmRouter = remember { LlmRouter() },
-    settings: ConversationSettings = remember { ConversationSettings() },
 ) {
-    val turns = remember { mutableStateListOf<Turn>() }
-    var input by remember { mutableStateOf("") }
-    var isStreaming by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val viewModel: ConversationViewModel = viewModel(
+        factory = ConversationViewModel.factory(
+            context = context,
+            teammateSlug = teammateSlug,
+            title = teammateTitle,
+        ),
+        key = "conversation-$teammateSlug",
+    )
+
+    LaunchedEffect(teammateSlug) {
+        viewModel.start(context)
+    }
+
+    val state by viewModel.state.collectAsStateWithLifecycle()
     val sheetState = rememberModalBottomSheetState()
     var settingsOpen by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
-    var streamJob by remember { mutableStateOf<Job?>(null) }
 
     Scaffold(
         topBar = {
@@ -128,7 +107,7 @@ fun ConversationScreen(
                     .weight(1f)
                     .fillMaxWidth(),
             ) {
-                if (turns.isEmpty()) {
+                if (state.messages.isEmpty() && !state.isStreaming) {
                     Text(
                         text = "Send a message to start.",
                         modifier = Modifier
@@ -143,38 +122,21 @@ fun ConversationScreen(
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(items = turns, key = { it.hashCode() }) { turn ->
-                            TurnBubble(turn)
+                        items(items = state.messages, key = { it.id }) { turn ->
+                            TurnBubble(turn = turn, partialText = state.partialResponse)
                         }
                     }
-                    androidx.compose.runtime.LaunchedEffect(turns.size) {
-                        if (turns.isNotEmpty()) {
-                            listState.animateScrollToItem(turns.size - 1)
+                    LaunchedEffect(state.messages.size) {
+                        if (state.messages.isNotEmpty()) {
+                            listState.animateScrollToItem(state.messages.size - 1)
                         }
                     }
                 }
             }
             HorizontalDivider()
             InputBar(
-                value = input,
-                onValueChange = { input = it },
-                enabled = !isStreaming,
-                onSend = { text ->
-                    val userText = text.trim()
-                    if (userText.isEmpty()) return@InputBar
-                    turns.add(Turn("user", userText))
-                    input = ""
-                    startStream(
-                        router = router,
-                        settings = settings,
-                        teammateTitle = teammateTitle,
-                        userText = userText,
-                        turns = turns,
-                        scope = scope,
-                        onJob = { streamJob = it },
-                        onStreamingChange = { isStreaming = it },
-                    )
-                },
+                onSend = { text -> viewModel.sendMessage(text) },
+                enabled = !state.isStreaming,
             )
         }
     }
@@ -182,15 +144,19 @@ fun ConversationScreen(
     if (settingsOpen) {
         SettingsSheet(
             sheetState = sheetState,
-            settings = settings,
+            active = state.activeProvider,
+            onActivate = { config -> viewModel.setProvider(config) },
             onDismiss = { settingsOpen = false },
         )
     }
 }
 
 @Composable
-private fun TurnBubble(turn: Turn) {
+private fun TurnBubble(turn: TurnEntity, partialText: String) {
     val isUser = turn.role == "user"
+    val isStreamingAssistant = !isUser && turn.content.isEmpty()
+    val displayContent = if (isStreamingAssistant && partialText.isNotEmpty()) partialText else turn.content
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
@@ -207,7 +173,7 @@ private fun TurnBubble(turn: Turn) {
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                text = turn.text,
+                text = displayContent,
                 style = MaterialTheme.typography.bodyLarge,
             )
         }
@@ -216,11 +182,10 @@ private fun TurnBubble(turn: Turn) {
 
 @Composable
 private fun InputBar(
-    value: String,
-    onValueChange: (String) -> Unit,
-    enabled: Boolean,
     onSend: (String) -> Unit,
+    enabled: Boolean,
 ) {
+    var input by remember { mutableStateOf("") }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -229,8 +194,8 @@ private fun InputBar(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
+            value = input,
+            onValueChange = { input = it },
             modifier = Modifier.weight(1f),
             enabled = enabled,
             placeholder = { Text("Ask anything…") },
@@ -241,42 +206,48 @@ private fun InputBar(
             ),
         )
         Button(
-            onClick = { onSend(value) },
-            enabled = enabled && value.isNotBlank(),
+            onClick = {
+                val text = input
+                if (text.isNotBlank()) {
+                    onSend(text)
+                    input = ""
+                }
+            },
+            enabled = enabled && input.isNotBlank(),
         ) {
             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
         }
     }
 }
 
+/**
+ * Provider settings sheet. For M2 it surfaces just the two built-in
+ * providers — M3 will add Anthropic, fetch live model lists, etc.
+ *
+ * The active row comes from [ConversationUiState.activeProvider] (loaded from
+ * [com.sidekick.app.data.dao.ProviderConfigDao]); changes write through
+ * [ConversationViewModel.setProvider] so the router's cache invalidates.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsSheet(
     sheetState: androidx.compose.material3.SheetState,
-    settings: ConversationSettings,
+    active: ProviderConfigEntity?,
+    onActivate: (ProviderConfigEntity) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val current = settings.provider
-    val isOllama = current is Provider.LocalOllama
-    val isCloud = current is Provider.CloudOpenAI
-    var baseUrl: String by remember(current) { mutableStateOf(
-        when (current) {
-            is Provider.LocalOllama -> current.baseUrl
-            is Provider.CloudOpenAI -> current.apiBaseUrl
-        }
-    ) }
-    var modelName: String by remember(current) { mutableStateOf(
-        when (current) {
-            is Provider.LocalOllama -> current.modelName
-            is Provider.CloudOpenAI -> current.modelName
-        }
-    ) }
-    var apiKey: String by remember(current) { mutableStateOf(
-        when (current) {
-            is Provider.LocalOllama -> ""
-            is Provider.CloudOpenAI -> current.apiKey
-        }
-    ) }
+    var baseUrl by remember(active?.id) {
+        mutableStateOf(active?.baseUrl ?: "http://10.0.2.2:11434")
+    }
+    var modelName by remember(active?.id) {
+        mutableStateOf(active?.modelName ?: "qwen2.5-coder:7b")
+    }
+    var apiKey by remember(active?.id) {
+        mutableStateOf(active?.apiKey ?: "")
+    }
+    var pendingKind by remember(active?.id) {
+        mutableStateOf(active?.providerKind ?: "local_ollama")
+    }
 
     ModalBottomSheet(
         sheetState = sheetState,
@@ -291,157 +262,66 @@ private fun SettingsSheet(
             Text("Provider", style = MaterialTheme.typography.titleMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
-                    onClick = {
-                        settings.provider = Provider.LocalOllama(
-                            baseUrl = baseUrl.ifBlank { "http://10.0.2.2:11434" },
-                            modelName = modelName.ifBlank { "qwen2.5-coder:7b" },
-                        )
-                    },
-                    enabled = isOllama,
+                    onClick = { pendingKind = "local_ollama" },
+                    enabled = pendingKind != "local_ollama",
                 ) { Text("Local Ollama") }
                 Button(
-                    onClick = {
-                        settings.provider = Provider.CloudOpenAI(
-                            apiBaseUrl = baseUrl.ifBlank { "https://api.openai.com/v1" },
-                            apiKey = apiKey,
-                            modelName = modelName.ifBlank { "gpt-4o-mini" },
-                        )
-                    },
-                    enabled = isCloud,
+                    onClick = { pendingKind = "cloud_openai" },
+                    enabled = pendingKind != "cloud_openai",
                 ) { Text("Cloud OpenAI") }
             }
             OutlinedTextField(
                 value = baseUrl,
-                onValueChange = {
-                    baseUrl = it
-                    applyFieldChange(settings, baseUrl, modelName, apiKey)
-                },
+                onValueChange = { baseUrl = it },
                 label = { Text("Base URL") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
             OutlinedTextField(
                 value = modelName,
-                onValueChange = {
-                    modelName = it
-                    applyFieldChange(settings, baseUrl, modelName, apiKey)
-                },
+                onValueChange = { modelName = it },
                 label = { Text("Model") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
-            if (isCloud) {
+            if (pendingKind == "cloud_openai") {
                 OutlinedTextField(
                     value = apiKey,
-                    onValueChange = {
-                        apiKey = it
-                        applyFieldChange(settings, baseUrl, modelName, apiKey)
-                    },
+                    onValueChange = { apiKey = it },
                     label = { Text("API key") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                 )
             }
-            Text(
-                "M2 will persist these via DataStore.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
-}
-
-private fun applyFieldChange(
-    settings: ConversationSettings,
-    baseUrl: String,
-    modelName: String,
-    apiKey: String,
-) {
-    val current = settings.provider
-    settings.provider = when (current) {
-        is Provider.LocalOllama -> Provider.LocalOllama(
-            baseUrl = baseUrl.ifBlank { "http://10.0.2.2:11434" },
-            modelName = modelName.ifBlank { "qwen2.5-coder:7b" },
-        )
-        is Provider.CloudOpenAI -> Provider.CloudOpenAI(
-            apiBaseUrl = baseUrl.ifBlank { "https://api.openai.com/v1" },
-            apiKey = apiKey,
-            modelName = modelName.ifBlank { "gpt-4o-mini" },
-        )
-    }
-}
-
-/**
- * Launch a streaming call against the current [settings.provider] and
- * append the assistant's reply to [turns] chunk by chunk. Cancellable via
- * the returned [Job] (held by the caller in `streamJob`).
- */
-private fun startStream(
-    router: LlmRouter,
-    settings: ConversationSettings,
-    teammateTitle: String,
-    userText: String,
-    turns: SnapshotStateList<Turn>,
-    scope: CoroutineScope,
-    onJob: (Job?) -> Unit,
-    onStreamingChange: (Boolean) -> Unit,
-) {
-    val systemPrompt = systemPromptFor(teammateTitle)
-    val request = LlmRequest(
-        messages = listOf(
-            ChatMessage("system", systemPrompt),
-            ChatMessage("user", userText),
-        ),
-    )
-    val assistantIndex = turns.size
-    turns.add(Turn("assistant", ""))
-    onStreamingChange(true)
-
-    val job = scope.launch {
-        val collected = StringBuilder()
-        var caught: Throwable? = null
-        try {
-            val streamJob = router.stream(settings.provider, request) { chunk ->
-                when (chunk) {
-                    is LlmChunk.Text -> {
-                        collected.append(chunk.delta)
-                        turns[assistantIndex] = Turn("assistant", collected.toString())
-                    }
-                    is LlmChunk.Done -> {
-                        // Final token accounting is currently unused in the UI.
-                    }
-                }
+            Button(
+                onClick = {
+                    val config = ProviderConfigEntity(
+                        id = active?.id ?: 0L,
+                        providerKind = pendingKind,
+                        baseUrl = baseUrl,
+                        apiKey = if (pendingKind == "cloud_openai") apiKey else null,
+                        modelName = modelName,
+                        isActive = true,
+                    )
+                    onActivate(config)
+                    onDismiss()
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = baseUrl.isNotBlank() && modelName.isNotBlank(),
+            ) {
+                Text("Save")
             }
-            streamJob.join()
-        } catch (t: Throwable) {
-            caught = t
         }
-        if (caught != null) {
-            val message = when (val e = caught) {
-                is LlmException -> e.message ?: e::class.simpleName.orEmpty()
-                else -> caught.message ?: caught::class.simpleName.orEmpty()
-            }
-            turns[assistantIndex] = Turn(
-                "assistant",
-                "[error] " + (if (caught is LlmException) errorSummary(caught) else message),
-            )
-        }
-        onStreamingChange(false)
-        onJob(null)
     }
-    onJob(job)
-}
-
-private fun errorSummary(e: LlmException): String = when (e) {
-    is LlmException.Network -> "Network: ${e.message}"
-    is LlmException.HttpStatus -> "HTTP ${e.code}: ${e.message}"
-    is LlmException.Decode -> "Decode: ${e.message}"
-    is LlmException.ProviderSpecific -> "Provider: ${e.message}"
 }
 
 @Preview(showBackground = true)
 @Composable
 private fun ConversationScreenPreview() {
     SidekickTheme {
-        ConversationScreen(teammateTitle = "Coder")
+        // Preview cannot construct a real ViewModel + DB; render an empty
+        // home-screen preview instead. Compose previews don't exercise the
+        // real data layer.
+        Text("ConversationScreen — preview unavailable (real ViewModel needed)")
     }
 }
