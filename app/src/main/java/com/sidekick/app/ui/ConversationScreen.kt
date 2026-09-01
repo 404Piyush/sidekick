@@ -249,8 +249,16 @@ fun ConversationScreen(
                             }
                         }
                         state.error?.let { err ->
-                            item(key = "error-chip") {
-                                ErrorChip(error = err, onDismiss = { viewModel.dismissError() })
+                            // Only show the chip if the most recent transcript
+                            // message isn't already the error (otherwise the
+                            // user sees the error twice — chip + assistant bubble).
+                            val lastTurn = state.messages.lastOrNull()
+                            val lastIsError = lastTurn?.role == "assistant" &&
+                                lastTurn.content.startsWith("[error]")
+                            if (!lastIsError) {
+                                item(key = "error-chip") {
+                                    ErrorChip(error = err, onDismiss = { viewModel.dismissError() })
+                                }
                             }
                         }
                     }
