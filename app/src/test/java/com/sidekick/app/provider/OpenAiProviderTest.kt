@@ -47,9 +47,9 @@ class OpenAiProviderTest {
         )
 
         val provider = OpenAiProvider(
-            apiBaseUrl = server.url("/").toString().trimEnd('/'),
-            apiKey = "sk-test",
-            modelName = "gpt-4o-mini",
+            apiBaseUrlInternal = server.url("/").toString().trimEnd('/'),
+            apiKeyInternal = "sk-test",
+            modelNameInternal = "gpt-4o-mini",
         )
         val request = LlmRequest(
             messages = listOf(ChatMessage.text("user", "Say hi")),
@@ -76,9 +76,9 @@ class OpenAiProviderTest {
         )
 
         val provider = OpenAiProvider(
-            apiBaseUrl = server.url("/").toString().trimEnd('/'),
-            apiKey = "sk-test-abc",
-            modelName = "gpt-4o-mini",
+            apiBaseUrlInternal = server.url("/").toString().trimEnd('/'),
+            apiKeyInternal = "sk-test-abc",
+            modelNameInternal = "gpt-4o-mini",
         )
         provider.stream(
             LlmRequest(
@@ -120,9 +120,9 @@ class OpenAiProviderTest {
         )
 
         val provider = OpenAiProvider(
-            apiBaseUrl = server.url("/").toString().trimEnd('/'),
-            apiKey = "wrong",
-            modelName = "gpt-4o-mini",
+            apiBaseUrlInternal = server.url("/").toString().trimEnd('/'),
+            apiKeyInternal = "wrong",
+            modelNameInternal = "gpt-4o-mini",
         )
         var thrown: Throwable? = null
         try {

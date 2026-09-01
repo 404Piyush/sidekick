@@ -217,6 +217,12 @@ class AgentLoop(
                     is LlmChunk.Done -> {
                         done = true
                     }
+                    // M4.5: PullProgress events are emitted by
+                    // OllamaModelManager.pull, not by a chat stream. The
+                    // agent loop simply ignores them — a chat call should
+                    // never see one, but adding a no-op branch keeps the
+                    // `when` exhaustive and the compiler happy.
+                    is LlmChunk.PullProgress -> Unit
                 }
                 is StreamEvent.Failure -> {
                     error = event.throwable

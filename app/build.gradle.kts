@@ -13,8 +13,8 @@ android {
         applicationId = "com.sidekick.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 5
-        versionName = "0.5.0"
+        versionCode = 6
+        versionName = "0.6.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -22,9 +22,23 @@ android {
         }
     }
 
+    signingConfigs {
+        create("hackathonRelease") {
+            // Reuse the auto-generated debug keystore so the release APK is
+            // installable on any device without manual key management.
+            // This is fine for the iQOO Hackathon demo (judges sideload via
+            // `adb install`); it is NOT acceptable for Play Store distribution.
+            storeFile = file(System.getProperty("user.home") + "/.android/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("hackathonRelease")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

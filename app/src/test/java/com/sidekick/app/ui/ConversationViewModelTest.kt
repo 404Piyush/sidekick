@@ -335,7 +335,7 @@ private class FakeRouter : LlmRouter() {
 
     private val scriptedClient = ScriptedClient()
 
-    override fun clientFor(provider: Provider): LlmClient = scriptedClient
+    override fun clientFor(provider: Provider, context: android.content.Context?): LlmClient = scriptedClient
 
     override suspend fun stream(
         provider: Provider,
