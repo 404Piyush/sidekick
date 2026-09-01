@@ -439,6 +439,27 @@ class ConversationViewModel(
     }
 
     /**
+     * Switch the active model on the current provider config.
+     *
+     * Ollama only — `Provider.CloudOpenAI` doesn't have a model registry
+     * the user picks from; you set the model in [setProvider] when configuring
+     * the cloud endpoint. Calling [ModelFor on a cloud provider is a no-op.
+     */
+    fun selectModel(modelId: String) {
+        ioScope.launch {
+            val current = providerConfigDao.getActive() ?: return@launch
+            if (current.providerKind != "local_ollama") return@launch
+            val updated = current.copy(modelName = modelId)
+            providerConfigDao.update(updated)
+            // Invalidate the cached Ollama client so the next chat uses
+            // the new model.
+            val provider = updated.toProvider()
+            if (provider != null) router.invalidate(provider)
+            _state.value = _state.value.copy(activeProvider = updated)
+        }
+    }
+
+    /**
      * Queue a captured image URI for the next user turn. Called by the
      * camera button after a successful `ActivityResultContracts.TakePicture`.
      * Replaces any previous pending image — only one image can ride along
