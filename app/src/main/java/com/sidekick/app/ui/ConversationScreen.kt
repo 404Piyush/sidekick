@@ -82,7 +82,6 @@ import com.sidekick.app.tools.builtins.createPhotoTarget
 import com.sidekick.app.ui.components.chat.AnimatedMessageBubble
 import com.sidekick.app.ui.components.chat.DateSeparator
 import com.sidekick.app.ui.components.chat.MarkdownText
-import com.sidekick.app.ui.components.chat.StreamingCursor
 import com.sidekick.app.ui.components.chat.TeammateAvatar
 import com.sidekick.app.ui.components.chat.TeammateIcon
 import com.sidekick.app.ui.components.chat.TypingIndicator
@@ -411,7 +410,6 @@ private fun TurnBubble(
                     MarkdownText(source = displayContent)
                     if (isStreamingAssistant) {
                         TypingIndicator()
-                        StreamingCursor()
                     }
                 }
             }

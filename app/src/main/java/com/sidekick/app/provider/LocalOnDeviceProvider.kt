@@ -95,6 +95,9 @@ class LocalOnDeviceProvider(
      */
     private var engine: Engine? = null
 
+    /** Set after a failed engine init so subsequent messages fail fast. */
+    private var initFailed: Boolean = false
+
     /**
      * Construct an [EngineConfig] for this provider. Visible for tests
      * so they can assert the dispatch shape without actually loading
@@ -118,14 +121,38 @@ class LocalOnDeviceProvider(
         }
 
     private suspend fun execute(request: LlmRequest, onChunk: (LlmChunk) -> Unit) {
+        // Guard against init storms: if the engine fails to construct once,
+        // don't keep retrying and leaking native memory on unsupported
+        // hardware (e.g. x86_64 emulators, which have no ARM64 dispatch
+        // library). Fail fast with a clean error instead.
+        if (initFailed) {
+            throw LlmException.Network(
+                "On-device model can't run on this device (no supported accelerator). " +
+                    "It needs a Snapdragon/MediaTek NPU or GPU. Use Local Ollama or Cloud instead.",
+            )
+        }
+
         // Ensure the engine is initialised. LiteRT-LM's `engine.initialize()`
         // can take up to ~10 s for a 1B model — that's why this is in a
         // background coroutine, not the main thread.
-        val eng = withContext(Dispatchers.IO) {
-            engine ?: Engine(buildEngineConfig()).also {
-                it.initialize()
-                engine = it
+        val eng = try {
+            withContext(Dispatchers.IO) {
+                engine ?: Engine(buildEngineConfig()).also {
+                    it.initialize()
+                    engine = it
+                }
             }
+        } catch (e: Throwable) {
+            // Construction/init failure leaks native buffers on retry —
+            // remember the failure so a second message doesn't OOM the
+            // process, and surface it as a normal LlmException.
+            initFailed = true
+            runCatching { engine?.close() }
+            engine = null
+            throw LlmException.Network(
+                "Couldn't load the on-device model: ${e.message ?: e.javaClass.simpleName}. " +
+                    "It may not support this device's chip.",
+            )
         }
 
         // Build the conversation with a fresh system prompt and the
@@ -245,6 +272,7 @@ class LocalOnDeviceProvider(
     fun close() {
         runCatching { engine?.close() }
         engine = null
+        initFailed = false
     }
 
     companion object {
