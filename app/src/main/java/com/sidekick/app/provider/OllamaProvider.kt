@@ -165,9 +165,37 @@ class OllamaProvider(
             return
         }
 
-        val messageContent = obj["message"]?.jsonObject?.get("content")?.jsonPrimitive?.contentOrNull
-        if (messageContent != null && messageContent.isNotEmpty()) {
-            onChunk(LlmChunk.Text(messageContent))
+        // Fallback: some Ollama model variants (notably Qwen2.5-Coder) emit
+        // tool calls as a JSON blob inside `content` instead of as a proper
+        // `tool_calls` array. Detect the shape `{name, arguments}` and lift
+        // it into a real LlmChunk.ToolCall. This keeps the agent loop
+        // working with code-trained models that don't speak the wire
+        // protocol perfectly.
+        val rawText = obj["message"]?.jsonObject?.get("content")
+            ?.jsonPrimitive?.contentOrNull
+        if (rawText != null && rawText.isNotEmpty()) {
+            val trimmed = rawText.trim()
+            if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+                val parsed = try { json.parseToJsonElement(trimmed).jsonObject } catch (e: Exception) { null }
+                if (parsed != null) {
+                    val name = parsed["name"]?.jsonPrimitive?.contentOrNull
+                    val argsElement = parsed["arguments"]
+                    if (name != null && argsElement != null) {
+                        val args = when (argsElement) {
+                            is kotlinx.serialization.json.JsonObject -> argsElement
+                            is kotlinx.serialization.json.JsonPrimitive -> try {
+                                json.parseToJsonElement(argsElement.content).jsonObject
+                            } catch (e: Exception) {
+                                kotlinx.serialization.json.buildJsonObject { }
+                            }
+                            else -> kotlinx.serialization.json.buildJsonObject { }
+                        }
+                        onChunk(LlmChunk.ToolCall(id = name, name = name, args = args))
+                        return
+                    }
+                }
+            }
+            onChunk(LlmChunk.Text(rawText))
         }
     }
 

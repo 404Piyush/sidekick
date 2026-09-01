@@ -782,7 +782,7 @@ private fun SettingsSheet(
         mutableStateOf(active?.baseUrl ?: "http://10.0.2.2:11434")
     }
     var modelName by remember(active?.id) {
-        mutableStateOf(active?.modelName ?: "qwen2.5-coder:1.5b")
+        mutableStateOf(active?.modelName ?: "qwen2.5-coder:7b")
     }
     var apiKey by remember(active?.id) {
         mutableStateOf(active?.apiKey ?: "")

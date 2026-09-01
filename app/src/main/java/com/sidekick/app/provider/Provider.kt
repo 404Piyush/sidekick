@@ -19,7 +19,7 @@ sealed class Provider {
      */
     data class LocalOllama(
         val baseUrl: String = "http://10.0.2.2:11434",
-        val modelName: String = "qwen2.5-coder:1.5b",
+        val modelName: String = "qwen2.5-coder:7b",
     ) : Provider()
 
     /**

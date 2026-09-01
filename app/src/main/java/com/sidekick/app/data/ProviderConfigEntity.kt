@@ -27,7 +27,7 @@ import androidx.room.PrimaryKey
  *                   Ignored for `local_on_device`.
  * @property apiKey Bearer token for cloud providers, `null` for local.
  * @property modelName The model the user wants to talk to
- *                     (e.g. `qwen2.5-coder:1.5b`, `gpt-4o-mini`).
+ *                     (e.g. `qwen2.5-coder:7b`, `gpt-4o-mini`).
  *                     For `local_on_device` we still record a display
  *                     name (e.g. `Gemma3-1B-IT`) so the UI can show what
  *                     the user picked; the LiteRT-LM runtime only cares
