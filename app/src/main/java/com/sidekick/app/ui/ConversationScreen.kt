@@ -305,6 +305,11 @@ fun ConversationScreen(
             listLocalModels = { baseUrl -> viewModel.listLocalModels(baseUrl) },
             pullModel = { baseUrl, modelId -> viewModel.pullModel(baseUrl, modelId) },
             onDismiss = { settingsOpen = false },
+            onDeviceModelReady = state.onDeviceModelReady,
+            onDeviceDownloading = state.onDeviceDownloading,
+            onDeviceDownloadPercent = state.onDeviceDownloadPercent,
+            onDownloadOnDevice = { viewModel.downloadOnDeviceModel() },
+            onActivateOnDevice = { viewModel.activateOnDeviceModel() },
         )
     }
 }
@@ -683,6 +688,11 @@ private fun SettingsSheet(
     listLocalModels: suspend (String) -> List<String>,
     pullModel: (String, String) -> kotlinx.coroutines.flow.Flow<LlmChunk.PullProgress>,
     onDismiss: () -> Unit,
+    onDeviceModelReady: Boolean,
+    onDeviceDownloading: Boolean,
+    onDeviceDownloadPercent: Int,
+    onDownloadOnDevice: () -> Unit,
+    onActivateOnDevice: () -> Unit,
 ) {
     var baseUrl by remember(active?.id) {
         mutableStateOf(active?.baseUrl ?: "http://10.0.2.2:11434")
@@ -708,6 +718,64 @@ private fun SettingsSheet(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            Text("On-device model", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "Runs fully on your phone. No internet, no cloud.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            when {
+                onDeviceModelReady -> {
+                    Text(
+                        text = "Qwen3-0.6B — ready",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(
+                        onClick = onActivateOnDevice,
+                        enabled = active?.providerKind != "local_on_device",
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            if (active?.providerKind == "local_on_device") {
+                                "On-device model active"
+                            } else {
+                                "Use on-device model"
+                            },
+                        )
+                    }
+                }
+                onDeviceDownloading -> {
+                    Text(
+                        text = if (onDeviceDownloadPercent >= 0) {
+                            "Downloading model… $onDeviceDownloadPercent%"
+                        } else {
+                            "Downloading model…"
+                        },
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    LinearProgressIndicator(
+                        progress = {
+                            if (onDeviceDownloadPercent >= 0) {
+                                onDeviceDownloadPercent / 100f
+                            } else {
+                                0f
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                else -> {
+                    Button(
+                        onClick = onDownloadOnDevice,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Download model (~328 MB)")
+                    }
+                }
+            }
+            HorizontalDivider()
+
             Text("Provider", style = MaterialTheme.typography.titleMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(

@@ -53,4 +53,7 @@ data class ConversationUiState(
     val activeProvider: ProviderConfigEntity? = null,
     val pendingImageUri: String? = null,
     val cameraEnabled: Boolean = true,
+    val onDeviceModelReady: Boolean = false,
+    val onDeviceDownloading: Boolean = false,
+    val onDeviceDownloadPercent: Int = -1,
 )

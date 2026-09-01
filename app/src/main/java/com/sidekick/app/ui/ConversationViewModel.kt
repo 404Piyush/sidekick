@@ -25,6 +25,8 @@ import com.sidekick.app.provider.LlmRouter
 import com.sidekick.app.provider.MessageContent
 import com.sidekick.app.provider.MessagePart
 import com.sidekick.app.provider.OllamaModelManager
+import com.sidekick.app.provider.OnDeviceDownload
+import com.sidekick.app.provider.OnDeviceModelManager
 import com.sidekick.app.provider.Provider
 import com.sidekick.app.tools.CameraLauncher
 import com.sidekick.app.tools.ToolContext
@@ -124,6 +126,7 @@ class ConversationViewModel(
                 conversationId = cid,
                 teammate = teammate,
                 activeProvider = activeConfig,
+                onDeviceModelReady = onDeviceManager?.isDownloaded() ?: false,
             )
 
             // Observe turns for this conversation.
@@ -484,6 +487,83 @@ class ConversationViewModel(
      * already installed on the server.
      */
     val curatedModels: List<String> = OllamaModelManager.CURATED_NAMES
+
+    /** Lazily-built on-device model manager; requires an app [Context]. */
+    private val onDeviceManager: OnDeviceModelManager? by lazy {
+        appContext?.let { OnDeviceModelManager(it) }
+    }
+
+    /**
+     * Whether the bundled on-device model is already downloaded and ready.
+     * False when there's no [appContext] (tests) or the file is absent.
+     */
+    fun onDeviceModelReady(): Boolean = onDeviceManager?.isDownloaded() ?: false
+
+    /**
+     * Kick off the on-device model download, streaming progress into state.
+     * No-op if already downloaded or a download is already running.
+     */
+    fun downloadOnDeviceModel() {
+        val manager = onDeviceManager ?: return
+        if (_state.value.onDeviceDownloading) return
+        if (manager.isDownloaded()) {
+            _state.value = _state.value.copy(onDeviceModelReady = true)
+            return
+        }
+        _state.value = _state.value.copy(onDeviceDownloading = true, onDeviceDownloadPercent = 0)
+        ioScope.launch {
+            try {
+                manager.download().collect { update ->
+                    when (update) {
+                        is OnDeviceDownload.Progress -> _state.value = _state.value.copy(
+                            onDeviceDownloading = true,
+                            onDeviceDownloadPercent = update.percent,
+                        )
+                        is OnDeviceDownload.Complete -> _state.value = _state.value.copy(
+                            onDeviceDownloading = false,
+                            onDeviceDownloadPercent = 100,
+                            onDeviceModelReady = true,
+                        )
+                        is OnDeviceDownload.Started -> _state.value = _state.value.copy(
+                            onDeviceDownloading = true,
+                            onDeviceDownloadPercent = 0,
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    onDeviceDownloading = false,
+                    onDeviceDownloadPercent = -1,
+                )
+            }
+        }
+    }
+
+    /**
+     * Activate the on-device provider using the downloaded model file.
+     * Persists a `local_on_device` config with the model's absolute path.
+     */
+    fun activateOnDeviceModel() {
+        val manager = onDeviceManager ?: return
+        if (!manager.isDownloaded()) return
+        ioScope.launch {
+            val config = ProviderConfigEntity(
+                providerKind = "local_on_device",
+                baseUrl = "",
+                apiKey = null,
+                modelName = "Qwen3-0.6B (on-device)",
+                isActive = true,
+                modelPath = manager.modelPath,
+                backend = Backend.NPU.name,
+            )
+            val id = providerConfigDao.insert(config)
+            providerConfigDao.setActive(id)
+            val persisted = config.copy(id = id)
+            val provider = persisted.toProvider()
+            if (provider != null) router.invalidate(provider)
+            _state.value = _state.value.copy(activeProvider = persisted)
+        }
+    }
 
     /**
      * Fetch the model names currently installed on the Ollama server at
