@@ -33,6 +33,14 @@ import com.sidekick.app.provider.LlmException
  * @property activeProvider The currently-selected [ProviderConfigEntity],
  *                          read once per stream start from
  *                          [com.sidekick.app.data.dao.ProviderConfigDao.getActive].
+ * @property pendingImageUri A freshly-captured photo URI that has not yet
+ *                           been sent. The UI renders a thumbnail preview
+ *                           above the input bar; tapping the camera
+ *                           button again replaces this with a new capture.
+ *                           `null` when no image is queued.
+ * @property cameraEnabled Whether the camera input is currently usable.
+ *                          Toggled by the Settings sheet's "Allow on-device
+ *                          image processing" switch.
  */
 data class ConversationUiState(
     val conversationId: Long? = null,
@@ -43,4 +51,6 @@ data class ConversationUiState(
     val partialResponse: String = "",
     val error: LlmException? = null,
     val activeProvider: ProviderConfigEntity? = null,
+    val pendingImageUri: String? = null,
+    val cameraEnabled: Boolean = true,
 )

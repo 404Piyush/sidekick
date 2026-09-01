@@ -52,7 +52,7 @@ class OpenAiProviderTest {
             modelName = "gpt-4o-mini",
         )
         val request = LlmRequest(
-            messages = listOf(ChatMessage("user", "Say hi")),
+            messages = listOf(ChatMessage.text("user", "Say hi")),
         )
 
         val collected = mutableListOf<LlmChunk>()
@@ -83,8 +83,8 @@ class OpenAiProviderTest {
         provider.stream(
             LlmRequest(
                 messages = listOf(
-                    ChatMessage("system", "Be brief."),
-                    ChatMessage("user", "Hi"),
+                    ChatMessage.text("system", "Be brief."),
+                    ChatMessage.text("user", "Hi"),
                 ),
                 temperature = 0.3,
                 maxTokens = 32,
@@ -126,7 +126,7 @@ class OpenAiProviderTest {
         )
         var thrown: Throwable? = null
         try {
-            provider.stream(LlmRequest(messages = listOf(ChatMessage("user", "x")))) {}.join()
+            provider.stream(LlmRequest(messages = listOf(ChatMessage.text("user", "x")))) {}.join()
         } catch (t: Throwable) {
             thrown = t
         }

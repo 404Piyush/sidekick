@@ -1,5 +1,6 @@
 package com.sidekick.app.provider
 
+import android.util.Log
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -63,9 +64,22 @@ class OllamaProvider(
     }
 
     private fun buildRequest(request: LlmRequest): Request {
+        // Ollama doesn't speak the OpenAI multimodal wire format. M4 keeps
+        // the simple text-only payload and warns if a multimodal message
+        // sneaks through — image parts get dropped, the model's text part
+        // gets sent as a plain string.
+        request.messages.forEachIndexed { i, msg ->
+            if (msg.content is MessageContent.Multimodal) {
+                Log.w(
+                    "OllamaProvider",
+                    "message #$i has multimodal content; image parts will be dropped " +
+                        "(Ollama multimodal support is out of scope for M4)",
+                )
+            }
+        }
         val body = OllamaRequest(
             model = modelName,
-            messages = request.messages.map { OllamaMessage(it.role, it.content) },
+            messages = request.messages.map { OllamaMessage(it.role, it.content.asPlainText()) },
             stream = true,
             options = OllamaOptions(
                 temperature = request.temperature,

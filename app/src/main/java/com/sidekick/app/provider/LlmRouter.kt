@@ -21,7 +21,11 @@ import kotlinx.coroutines.SupervisorJob
 open class LlmRouter(
     private val ollamaFactory: (Provider.LocalOllama) -> LlmClient = { OllamaProvider(it.baseUrl, it.modelName) },
     private val openAiFactory: (Provider.CloudOpenAI) -> LlmClient = {
-        OpenAiProvider(it.apiBaseUrl, it.apiKey, it.modelName)
+        OpenAiProvider(
+            apiBaseUrlInternal = it.apiBaseUrl,
+            apiKeyInternal = it.apiKey,
+            modelNameInternal = it.modelName,
+        )
     },
 ) {
 
@@ -32,9 +36,36 @@ open class LlmRouter(
         cache.remove(provider)
     }
 
-    open fun clientFor(provider: Provider): LlmClient = when (provider) {
-        is Provider.LocalOllama -> cache.getOrPut(provider) { ollamaFactory(provider) }
-        is Provider.CloudOpenAI -> cache.getOrPut(provider) { openAiFactory(provider) }
+    /**
+     * Materialise the [LlmClient] for [provider]. M4 added an optional
+     * [android.content.Context] so the OpenAI provider can resolve
+     * `content://` URIs when serialising multimodal image parts.
+     */
+    open fun clientFor(provider: Provider, context: android.content.Context? = null): LlmClient {
+        val cached = cache[provider]
+        if (cached != null) return cached
+        val created = when (provider) {
+            is Provider.LocalOllama -> ollamaFactory(provider)
+            is Provider.CloudOpenAI -> openAiFactory(provider).withContext(context)
+        }
+        cache[provider] = created
+        return created
+    }
+
+    /**
+     * Re-create an existing [LlmClient] with the given context. Default
+     * implementations are no-ops; [OpenAiProvider] rebuilds itself with
+     * the context so its multimodal encoder can resolve `content://` URIs.
+     */
+    private fun LlmClient.withContext(context: android.content.Context?): LlmClient = when (this) {
+        is OpenAiProvider -> OpenAiProvider(
+            apiBaseUrlInternal = this@withContext.apiBaseUrlForRouter,
+            apiKeyInternal = this@withContext.apiKeyForRouter,
+            modelNameInternal = this@withContext.modelNameForRouter,
+            clientInternal = this@withContext.clientForRouter,
+            context = context,
+        )
+        else -> this
     }
 
     /**

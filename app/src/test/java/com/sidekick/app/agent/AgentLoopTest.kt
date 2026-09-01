@@ -87,8 +87,8 @@ class AgentLoopTest {
 
         val events = mutableListOf<AgentEvent>()
         val messages = listOf(
-            ChatMessage("system", "sys"),
-            ChatMessage("user", "hi"),
+            ChatMessage.text("system", "sys"),
+            ChatMessage.text("user", "hi"),
         )
 
         val out = loop.run(messages, registry.descriptors(), ctx) { events.add(it) }
@@ -97,7 +97,7 @@ class AgentLoopTest {
         // Final message list: original 2 + 1 assistant message.
         assertEquals(3, out.size)
         assertEquals("assistant", out.last().role)
-        assertEquals("Hello, world!", out.last().content)
+        assertEquals("Hello, world!", out.last().content.asPlainText())
 
         // We expect TextDelta x3 + TextDone x1, no tool events.
         val toolEvents = events.filter { it is AgentEvent.ToolCall || it is AgentEvent.ToolResult }
@@ -136,7 +136,7 @@ class AgentLoopTest {
         val loop = AgentLoop(provider = provider, registry = registry, maxIterations = 5)
 
         val events = mutableListOf<AgentEvent>()
-        val out = loop.run(listOf(ChatMessage("user", "what's on my list?")), registry.descriptors(), ctx) { events.add(it) }
+        val out = loop.run(listOf(ChatMessage.text("user", "what's on my list?")), registry.descriptors(), ctx) { events.add(it) }
 
         // Two provider calls — once for the tool call, once after.
         assertEquals(2, provider.callCount)
@@ -158,8 +158,8 @@ class AgentLoopTest {
         // the assistant message.
         val roles = out.map { it.role }
         assertEquals(listOf("user", "tool", "assistant"), roles)
-        assertEquals("buy milk", out[1].content)
-        assertEquals("Got it: buy milk", out[2].content)
+        assertEquals("buy milk", out[1].content.asPlainText())
+        assertEquals("Got it: buy milk", out[2].content.asPlainText())
     }
 
     @Test
@@ -180,7 +180,7 @@ class AgentLoopTest {
 
         val events = mutableListOf<AgentEvent>()
         // We expect the loop to call the provider exactly 3 times (maxIterations).
-        val out = loop.run(listOf(ChatMessage("user", "loop")), registry.descriptors(), ctx) { events.add(it) }
+        val out = loop.run(listOf(ChatMessage.text("user", "loop")), registry.descriptors(), ctx) { events.add(it) }
 
         assertEquals(3, provider.callCount)
         val exceeded = events.filterIsInstance<AgentEvent.MaxIterationsExceeded>()
@@ -216,12 +216,12 @@ class AgentLoopTest {
         val loopBeta = AgentLoop(provider = betaProvider, registry = registry)
 
         val alphaMessages = listOf(
-            ChatMessage("system", "alpha system"),
-            ChatMessage("user", "alpha question"),
+            ChatMessage.text("system", "alpha system"),
+            ChatMessage.text("user", "alpha question"),
         )
         val betaMessages = listOf(
-            ChatMessage("system", "beta system"),
-            ChatMessage("user", "beta question"),
+            ChatMessage.text("system", "beta system"),
+            ChatMessage.text("user", "beta question"),
         )
 
         val alphaScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
@@ -241,14 +241,14 @@ class AgentLoopTest {
         val betaOut = betaResult.await()
 
         // Each loop must have produced its own assistant message.
-        assertEquals("alpha reply", alphaOut.last().content)
-        assertEquals("beta reply", betaOut.last().content)
+        assertEquals("alpha reply", alphaOut.last().content.asPlainText())
+        assertEquals("beta reply", betaOut.last().content.asPlainText())
         // Each must contain its own system prompt.
-        assertEquals("alpha system", alphaOut.first().content)
-        assertEquals("beta system", betaOut.first().content)
+        assertEquals("alpha system", alphaOut.first().content.asPlainText())
+        assertEquals("beta system", betaOut.first().content.asPlainText())
         // And neither contains the other's user question.
-        assertTrue(alphaOut.none { it.content == "beta question" })
-        assertTrue(betaOut.none { it.content == "alpha question" })
+        assertTrue(alphaOut.none { it.content.asPlainText() == "beta question" })
+        assertTrue(betaOut.none { it.content.asPlainText() == "alpha question" })
 
         alphaScope.coroutineContext[Job]?.cancel()
         betaScope.coroutineContext[Job]?.cancel()

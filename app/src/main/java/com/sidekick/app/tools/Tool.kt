@@ -1,6 +1,7 @@
 package com.sidekick.app.tools
 
 import android.content.Context
+import android.net.Uri
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -51,7 +52,7 @@ interface Tool {
      * @param ctx Sandbox context carrying the Android [Context] (for file
      *            reads scoped to `filesDir`) and the active conversation
      *            id (for any tool that needs to attach artefacts, e.g. the
-     *            camera stub).
+     *            camera tool which writes photos into `filesDir/photos/`).
      */
     suspend fun invoke(args: JsonObject, ctx: ToolContext): ToolResult
 }
@@ -72,21 +73,61 @@ sealed class ToolResult {
 }
 
 /**
+ * Bridge between a tool and the host activity's
+ * `registerForActivityResult(ActivityResultContracts.TakePicture())` hook.
+ *
+ * The tool runs inside the agent loop on `Dispatchers.IO`; launching an
+ * Activity Result contract from a non-main thread is fragile (the underlying
+ * `ActivityResultRegistry` writes to its `mKeyToCallback` map without a
+ * lock). So the UI binds the contract up-front and exposes a
+ * coroutine-friendly [takePicture] here. Tests substitute a fake that
+ * returns a predetermined `Boolean` without spinning up an Activity.
+ *
+ * `takePicture` is a non-suspending function that returns immediately
+ * with a [kotlinx.coroutines.CompletableDeferred] the caller can await.
+ * This avoids the chicken-and-egg of `suspendCancellableCoroutine` plus a
+ * Compose `rememberLauncherForActivityResult` callback (Compose's
+ * launcher fires the callback off-thread; a coroutine continuation
+ * resumed there is not guaranteed to land on the original dispatcher).
+ */
+fun interface CameraLauncher {
+    /**
+     * Launch the system camera, write the captured image into [outputUri],
+     * and resolve the returned [kotlinx.coroutines.CompletableDeferred]
+     * with `true` on success or `false` if the user cancelled.
+     *
+     * Implementations MUST surface the result through the deferred
+     * exactly once. The caller ([TakePhoto]) awaits the deferred as a
+     * `suspend` operation.
+     */
+    fun takePicture(outputUri: Uri): kotlinx.coroutines.CompletableDeferred<Boolean>
+}
+
+/**
  * Per-invocation context for [Tool.invoke].
  *
  * M3 keeps this intentionally tiny. Tools that need more (per-user
  * settings, network clients, etc.) take them through their constructor —
  * the registry passes a single shared instance per tool across calls.
  *
+ * M4 added [activityLauncher] for tools that need to talk back to the
+ * host Activity (camera capture, future share/file-pickers). It is
+ * `null` when the tool is invoked outside a Compose screen — e.g. by
+ * a headless test fixture — and tools should fail closed (`ToolResult.Err`)
+ * when they can't proceed without one.
+ *
  * @property appContext The application [Context]. Used by file-system
  *                      tools (read_file, list_dir) so paths can resolve
  *                      against `context.filesDir` and be sandboxed.
  * @property sessionId  The active conversation id, for tools that
  *                      associate output with a conversation (e.g. an
- *                      image attachment). M3's stub camera returns an
- *                      error and doesn't use it yet.
+ *                      image attachment).
+ * @property activityLauncher Camera-launcher bridge. `null` when the
+ *                      tool runs headlessly (tests, background jobs).
+ *                      See [CameraLauncher].
  */
 data class ToolContext(
     val appContext: Context,
     val sessionId: Long,
+    val activityLauncher: CameraLauncher? = null,
 )

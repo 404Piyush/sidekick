@@ -1,5 +1,10 @@
 package com.sidekick.app.provider
 
+import android.util.Base64
+import java.io.File
+import java.io.FileInputStream
+import java.io.InputStream
+import android.net.Uri
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -9,10 +14,13 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import com.sidekick.app.tools.ToolDescriptor
 import kotlinx.serialization.json.contentOrNull
@@ -54,10 +62,11 @@ import kotlin.coroutines.resumeWithException
  * be logged; that's the caller's responsibility.
  */
 class OpenAiProvider(
-    private val apiBaseUrl: String,
-    private val apiKey: String,
-    private val modelName: String,
-    private val client: OkHttpClient = defaultClient(),
+    internal val apiBaseUrlInternal: String,
+    internal val apiKeyInternal: String,
+    internal val modelNameInternal: String,
+    internal val clientInternal: OkHttpClient = defaultClient(),
+    internal val context: android.content.Context? = null,
 ) : LlmClient {
 
     override suspend fun stream(request: LlmRequest, onChunk: (LlmChunk) -> Unit): Job =
@@ -69,11 +78,11 @@ class OpenAiProvider(
 
     private suspend fun execute(request: LlmRequest, onChunk: (LlmChunk) -> Unit) {
         val httpRequest = buildRequest(request)
-        val response = client.newCall(httpRequest).awaitResponseOrThrow()
+        val response = clientInternal.newCall(httpRequest).awaitResponseOrThrow()
         response.use { handleResponse(it, onChunk) }
     }
 
-    private fun buildRequest(request: LlmRequest): Request {
+    private suspend fun buildRequest(request: LlmRequest): Request {
         // Convert [ToolDescriptor] into OpenAI's wire shape:
         //   [{ "type": "function", "function": { "name": ..., "description": ..., "parameters": <schema> } }]
         val toolDescriptors: List<ToolDescriptor> = request.tools.orEmpty()
@@ -92,8 +101,8 @@ class OpenAiProvider(
             }
         }
         val body = OpenAiRequest(
-            model = modelName,
-            messages = request.messages.map { OpenAiMessage(it.role, it.content) },
+            model = modelNameInternal,
+            messages = request.messages.map { encodeMessage(it) },
             temperature = request.temperature,
             maxTokens = request.maxTokens,
             stream = true,
@@ -104,10 +113,10 @@ class OpenAiProvider(
             tools = toolsJson,
         )
         val json = json.encodeToString(OpenAiRequest.serializer(), body)
-        val url = apiBaseUrl.trimEnd('/') + "/chat/completions"
+        val url = apiBaseUrlInternal.trimEnd('/') + "/chat/completions"
         return Request.Builder()
             .url(url)
-            .header("Authorization", "Bearer $apiKey")
+            .header("Authorization", "Bearer $apiKeyInternal")
             .header("Accept", "text/event-stream")
             .post(json.toRequestBody(JSON_MEDIA_TYPE))
             .build()
@@ -268,7 +277,120 @@ class OpenAiProvider(
     }
 
     @Serializable
-    private data class OpenAiMessage(val role: String, val content: String)
+    private data class OpenAiMessage(
+        val role: String,
+        // Polymorphic: a plain text message serialises to a string;
+        // a multimodal message serialises to a JSON array of typed parts.
+        // kotlinx.serialization encodes `JsonElement` as its raw shape.
+        val content: JsonElement,
+    )
+
+    /**
+     * Encode a [ChatMessage] into the OpenAI wire shape. The result's
+     * `content` is a JSON string for text-only messages and a JSON array
+     * of `{"type":"text",...}` / `{"type":"image_url",...}` parts for
+     * multimodal messages.
+     *
+     * Image parts are base64-encoded on the IO dispatcher via [encodeImage].
+     * Any IO failure is converted into an empty parts list with a sibling
+     * error marker rather than aborting the whole call — the model still
+     * gets the user's text, just without the image.
+     */
+    private suspend fun encodeMessage(message: ChatMessage): OpenAiMessage = when (val c = message.content) {
+        is MessageContent.Text -> OpenAiMessage(
+            role = message.role,
+            content = JsonPrimitive(c.text),
+        )
+        is MessageContent.Multimodal -> OpenAiMessage(
+            role = message.role,
+            content = encodeMultimodal(c),
+        )
+    }
+
+    private suspend fun encodeMultimodal(content: MessageContent.Multimodal): JsonElement {
+        val parts = buildJsonArray {
+            for (part in content.parts) {
+                when (part) {
+                    is MessagePart.TextPart -> add(
+                        buildJsonObject {
+                            put("type", JsonPrimitive("text"))
+                            put("text", JsonPrimitive(part.text))
+                        }
+                    )
+                    is MessagePart.ImagePart -> {
+                        val dataUrl = encodeImagePart(part)
+                        if (dataUrl != null) {
+                            add(
+                                buildJsonObject {
+                                    put("type", JsonPrimitive("image_url"))
+                                    put(
+                                        "image_url",
+                                        buildJsonObject {
+                                            put("url", JsonPrimitive(dataUrl))
+                                        },
+                                    )
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        return parts
+    }
+
+    /**
+     * Resolve an [MessagePart.ImagePart] into a `data:image/jpeg;base64,...`
+     * URL suitable for the OpenAI vision API. Returns `null` on any IO
+     * failure so the caller can drop the part rather than break the whole
+     * call.
+     */
+    private suspend fun encodeImagePart(part: MessagePart.ImagePart): String? {
+        // Already-encoded payloads skip re-encoding.
+        val existing = part.base64
+        if (existing != null) return "data:image/jpeg;base64,$existing"
+
+        return try {
+            // Resolve the URI/Path to raw bytes. We support:
+            //  - `content://...` URIs (camera output / MediaStore)
+            //  - `file://...` URIs
+            //  - bare filesystem paths
+            // Anything else returns null (the model just won't see the image).
+            val rawBytes: ByteArray? = coroutineScope {
+                val deferred = async(Dispatchers.IO) {
+                    openInputStreamForUriOrPath(part.uri).use { it?.readBytes() }
+                }
+                deferred.await()
+            }
+            if (rawBytes == null) null else {
+                val b64 = Base64.encodeToString(rawBytes, Base64.NO_WRAP)
+                "data:image/jpeg;base64,$b64"
+            }
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    private fun openInputStreamForUriOrPath(uriOrPath: String): InputStream? {
+        // content:// URI — go through ContentResolver.
+        val ctx = context
+        if (uriOrPath.startsWith("content://")) {
+            return if (ctx != null) {
+                ctx.contentResolver.openInputStream(Uri.parse(uriOrPath))
+            } else {
+                null
+            }
+        }
+        // file:// URI or bare path — open directly.
+        val raw = if (uriOrPath.startsWith("file://")) {
+            Uri.parse(uriOrPath).path ?: return null
+        } else {
+            uriOrPath
+        }
+        val file = File(raw)
+        if (!file.exists() || !file.isFile) return null
+        return FileInputStream(file)
+    }
 
     @Serializable
     private data class OpenAiStreamOptions(
@@ -302,3 +424,17 @@ class OpenAiProvider(
             .build()
     }
 }
+
+/**
+ * Internal accessors so [com.sidekick.app.provider.LlmRouter] can rebuild
+ * an [OpenAiProvider] with a [android.content.Context] without forcing
+ * those fields to be public. Not part of the public API.
+ */
+internal val OpenAiProvider.apiBaseUrlForRouter: String
+    get() = this.apiBaseUrlInternal
+internal val OpenAiProvider.apiKeyForRouter: String
+    get() = this.apiKeyInternal
+internal val OpenAiProvider.modelNameForRouter: String
+    get() = this.modelNameInternal
+internal val OpenAiProvider.clientForRouter: OkHttpClient
+    get() = this.clientInternal

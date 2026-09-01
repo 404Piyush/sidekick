@@ -8,6 +8,7 @@ import com.sidekick.app.agent.AgentLoop
 import com.sidekick.app.data.ConversationEntity
 import com.sidekick.app.data.ProviderConfigEntity
 import com.sidekick.app.data.Seed
+import com.sidekick.app.data.TeammateEntity
 import com.sidekick.app.data.ToolCallEntity
 import com.sidekick.app.data.TurnEntity
 import com.sidekick.app.data.dao.ConversationDao
@@ -20,7 +21,10 @@ import com.sidekick.app.provider.ChatMessage
 import com.sidekick.app.provider.LlmClient
 import com.sidekick.app.provider.LlmException
 import com.sidekick.app.provider.LlmRouter
+import com.sidekick.app.provider.MessageContent
+import com.sidekick.app.provider.MessagePart
 import com.sidekick.app.provider.Provider
+import com.sidekick.app.tools.CameraLauncher
 import com.sidekick.app.tools.ToolContext
 import com.sidekick.app.tools.ToolRegistry
 import com.sidekick.app.tools.builtins.ListDir
@@ -66,6 +70,7 @@ class ConversationViewModel(
     private val teammateSlug: String,
     private val title: String,
     private val appContext: Context? = null,
+    private val activityLauncher: CameraLauncher? = null,
     private val toolRegistryFactory: () -> ToolRegistry = ::defaultToolRegistry,
     private val agentLoopFactory: (LlmClient, ToolRegistry) -> AgentLoop = { c, r -> AgentLoop(c, r) },
     private val clock: () -> Long = { System.currentTimeMillis() },
@@ -156,20 +161,35 @@ class ConversationViewModel(
      *     state.
      */
     fun sendMessage(text: String) {
+        sendInternal(text = text, pendingImage = null)
+    }
+
+    /**
+     * Append a multimodal user turn (image + optional caption). M4 wires
+     * the camera capture path; this method takes the already-saved image
+     * URI and constructs a [com.sidekick.app.provider.MessageContent.Multimodal]
+     * message for the agent loop.
+     */
+    fun sendMultimodal(text: String, imageUri: String) {
+        sendInternal(text = text, pendingImage = imageUri)
+    }
+
+    private fun sendInternal(text: String, pendingImage: String?) {
         val cid = conversationId ?: return
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return
+        if (trimmed.isEmpty() && pendingImage.isNullOrBlank()) return
         val ctx = appContext ?: return
 
         streamJob = ioScope.launch {
             // 1. Persist user turn.
             val position = turnDao.countByConversation(cid)
             val now = clock()
+            val storedContent = if (pendingImage.isNullOrBlank()) trimmed else "$trimmed [image:$pendingImage]"
             turnDao.insert(
                 TurnEntity(
                     conversationId = cid,
                     role = "user",
-                    content = trimmed,
+                    content = storedContent,
                     position = position,
                     createdAt = now,
                 ),
@@ -197,12 +217,12 @@ class ConversationViewModel(
                 ?: teammateDao.getById(teammateSlug)
                 ?: error("Teammate $teammateSlug disappeared")
             val history = turnDao.getByConversation(cid).first()
-            val messages = buildList {
-                add(ChatMessage("system", teammate.systemPrompt))
-                history.filter { it.role in setOf("user", "assistant") }.forEach {
-                    add(ChatMessage(it.role, it.content))
-                }
-            }
+            val messages = buildConversationMessages(
+                history = history,
+                teammate = teammate,
+                pendingText = trimmed,
+                pendingImageUri = pendingImage,
+            )
             val provider: Provider = activeConfig?.toProvider()
                 ?: run {
                     finishWithError(cid, assistantTurnId, assistantPosition, LlmException.Network("No active provider configured"))
@@ -213,7 +233,7 @@ class ConversationViewModel(
             //    the LlmClient from the router up-front so a router cache
             //    miss surfaces here (rather than mid-stream).
             val client = try {
-                router.clientFor(provider)
+                router.clientFor(provider, ctx)
             } catch (t: Throwable) {
                 finishWithError(cid, assistantTurnId, assistantPosition, t.toLlmException())
                 return@launch
@@ -241,7 +261,7 @@ class ConversationViewModel(
             // in order and pair them by sequence.
             val toolEvents = mutableListOf<ToolEvent>()
 
-            val toolCtx = ToolContext(appContext = ctx, sessionId = cid)
+            val toolCtx = ToolContext(appContext = ctx, sessionId = cid, activityLauncher = activityLauncher)
             try {
                 loop.run(messages, registry.descriptors(), toolCtx) { event ->
                     when (event) {
@@ -327,6 +347,7 @@ class ConversationViewModel(
             _state.value = _state.value.copy(
                 isStreaming = false,
                 partialResponse = "",
+                pendingImageUri = null,
             )
         }
     }
@@ -417,6 +438,34 @@ class ConversationViewModel(
         }
     }
 
+    /**
+     * Queue a captured image URI for the next user turn. Called by the
+     * camera button after a successful `ActivityResultContracts.TakePicture`.
+     * Replaces any previous pending image — only one image can ride along
+     * with a single message.
+     */
+    fun setPendingImage(uri: String?) {
+        _state.value = _state.value.copy(pendingImageUri = uri)
+    }
+
+    /**
+     * Dismiss the in-flight error chip without clearing the captured
+     * [pendingImageUri].
+     */
+    fun dismissError() {
+        _state.value = _state.value.copy(error = null)
+    }
+
+    /**
+     * Toggle the Settings sheet's "Allow on-device image processing"
+     * switch. M4 stores it in memory only — wiring it to the DB is M5's
+     * job (the schema doesn't have the column yet).
+     */
+    fun setCameraEnabled(enabled: Boolean) {
+        _state.value = _state.value.copy(cameraEnabled = enabled)
+        if (!enabled) _state.value = _state.value.copy(pendingImageUri = null)
+    }
+
     /** Cancel the in-flight stream, if any. No-op when idle. */
     fun cancel() {
         streamJob?.cancel()
@@ -502,4 +551,48 @@ fun ProviderConfigEntity.toProvider(): Provider? = when (providerKind) {
         modelName = modelName,
     )
     else -> null
+}
+
+/**
+ * Build the [ChatMessage] list for one agent loop run.
+ *
+ * M3 sent each user turn as a plain string. M4 promotes the final user
+ * turn to a [MessageContent.Multimodal] when an image is attached so
+ * the OpenAI provider can encode the bytes inline. Historical turns
+ * stay as plain text — we don't have a place to store a per-turn image
+ * URI on the schema, and re-encoding past photos on every send would be
+ * wasteful.
+ *
+ * @param history The persisted turns, oldest first. The freshly-appended
+ *                user turn is included (the ViewModel inserts it before
+ *                this call).
+ * @param teammate The active teammate — supplies the system prompt.
+ * @param pendingText The current user message's text. Defaults to empty.
+ * @param pendingImageUri URI of a freshly-captured photo, or `null` for
+ *                        a plain-text turn.
+ */
+internal fun buildConversationMessages(
+    history: List<TurnEntity>,
+    teammate: TeammateEntity,
+    pendingText: String,
+    pendingImageUri: String?,
+): List<ChatMessage> = buildList {
+    add(ChatMessage.text("system", teammate.systemPrompt))
+    val visible = history.filter { it.role in setOf("user", "assistant") }
+    visible.forEachIndexed { i, turn ->
+        // The last turn is the one we just persisted. If it carries a
+        // captured image, lift it out into a multimodal message.
+        val isLast = i == visible.lastIndex
+        if (isLast && turn.role == "user" && !pendingImageUri.isNullOrBlank()) {
+            add(
+                ChatMessage.multimodal(
+                    role = "user",
+                    text = pendingText.takeIf { it.isNotBlank() },
+                    image = MessagePart.ImagePart(uri = pendingImageUri),
+                ),
+            )
+        } else {
+            add(ChatMessage.text(turn.role, turn.content))
+        }
+    }
 }

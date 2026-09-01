@@ -1,14 +1,24 @@
 package com.sidekick.app.tools.builtins
 
+import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
 import com.sidekick.app.tools.Tool
 import com.sidekick.app.tools.ToolContext
 import com.sidekick.app.tools.ToolResult
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import java.io.FileNotFoundException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.coroutines.resume
 
 /**
  * `read_file` — read a UTF-8 text file from the app sandbox.
@@ -131,27 +141,31 @@ class ListDir : Tool {
 }
 
 /**
- * `take_photo` — **STUB for M3.** Returns a not-yet-implemented error and
- * a `TODO` marker so the agent loop can still dispatch it (and so tests
- * can prove the dispatch path works end-to-end).
+ * `take_photo` — launch the device camera and save the captured image
+ * into the app sandbox.
  *
- * M4 will replace [invoke] with a real `ActivityResultContract.TakePicture`
- * launch that:
- *   1. Creates a temp file under `filesDir/photos/`.
- *   2. Returns the URI through `FileProvider`.
- *   3. Awaits the result and persists a [com.sidekick.app.data.ToolCallEntity]
- *      row pointing at the captured image.
- *   4. Returns Ok with a marker like `"captured:<path>"`.
+ * M4 wires the real flow:
+ *  1. Allocate an output destination under `filesDir/photos/<timestamp>.jpg`.
+ *  2. Insert a `MediaStore.Images.Media.EXTERNAL_CONTENT_URI` row on
+ *     Android 10+ (falls back to a sandbox file URI on older devices).
+ *  3. Ask the host activity to launch
+ *     `ActivityResultContracts.TakePicture` via [CameraLauncher] and
+ *     await the boolean result.
+ *  4. On success, return the captured URI / file path in the
+ *     `ToolResult.Ok.output` so the model can reference the image.
+ *  5. On cancel, return `(cancelled)` so the agent loop doesn't loop
+ *     forever waiting for an image.
  *
- * For M3 the stub keeps the tool registry well-formed and the dispatch
- * test exercising the camera branch; the agent loop forwards the error
- * message to the model verbatim.
+ * Tests inject a [CameraLauncher] via the [ToolContext]'s
+ * `activityLauncher` field — production wires one from
+ * `rememberLauncherForActivityResult` in
+ * [com.sidekick.app.ui.ConversationScreen].
  */
 class TakePhoto : Tool {
 
     override val name: String = "take_photo"
     override val description: String =
-        "Capture a photo with the device camera. STUB in M3 — returns not_implemented."
+        "Capture a photo with the device camera. Returns the captured image URI or '(cancelled)' on cancel."
 
     override val parameters: JsonObject = jsonSchema(
         """
@@ -163,8 +177,150 @@ class TakePhoto : Tool {
     )
 
     override suspend fun invoke(args: JsonObject, ctx: ToolContext): ToolResult {
-        // TODO(M4): replace with ActivityResultContract.TakePicture + FileProvider.
-        return ToolResult.Err("camera not yet implemented in M3; see M4")
+        val launcher = ctx.activityLauncher
+            ?: return ToolResult.Err(
+                "camera not available in this context: no ActivityLauncher bound",
+            )
+
+        // Allocate the output URI up-front so we can abort cleanly on a
+        // permission/IO failure before showing the camera UI.
+        val target = createPhotoTarget(ctx.appContext)
+            ?: return ToolResult.Err("could not allocate output destination for the captured photo")
+
+        // Hand off to the activity. The launcher returns immediately with
+        // a Deferred we await; cancellation of the surrounding coroutine
+        // cancels the deferred but does NOT cancel the system camera
+        // intent (Compose's launcher doesn't expose cancellation).
+        val deferred = try {
+            launcher.takePicture(target.uri)
+        } catch (t: Throwable) {
+            target.cleanup()
+            return ToolResult.Err(
+                "camera launch failed: ${t.message ?: t::class.simpleName.orEmpty()}",
+            )
+        }
+
+        val captured: Boolean = try {
+            deferred.await()
+        } catch (t: Throwable) {
+            target.cleanup()
+            return ToolResult.Err(
+                "camera capture failed: ${t.message ?: t::class.simpleName.orEmpty()}",
+            )
+        }
+
+        if (!captured) {
+            target.cleanup()
+            return ToolResult.Ok("(cancelled)")
+        }
+
+        // Verify the file actually has bytes — some camera apps return
+        // success=true without writing anything when the user backs out
+        // at a permission dialog.
+        if (!target.hasBytes()) {
+            target.cleanup()
+            return ToolResult.Err(
+                "camera reported success but the output file is empty",
+            )
+        }
+
+        return ToolResult.Ok(target.displayPath)
+    }
+}
+
+/**
+ * Where the camera should write the captured image. Two backends:
+ *  - On Android 10+ (Q) we insert into MediaStore so the photo lands
+ *    in the user's Pictures/Sidekick folder, scoped by the system.
+ *  - Older devices use a sandbox `filesDir/photos/<timestamp>.jpg` path
+ *    wrapped in a FileProvider URI (configured in
+ *    `app/src/main/res/xml/file_paths.xml`).
+ *
+ * Either way the returned [Uri] is fed to
+ * `ActivityResultContracts.TakePicture`, and the model gets back the
+ * canonical reference path in [displayPath].
+ */
+internal sealed class PhotoTarget {
+    abstract val uri: Uri
+    abstract val displayPath: String
+
+    /** True if the output file has at least one byte. */
+    abstract fun hasBytes(): Boolean
+
+    /** Remove the destination on a failed/cancelled capture. */
+    abstract fun cleanup()
+
+    /** A MediaStore-backed output (Android 10+). */
+    data class MediaStoreTarget(
+        override val uri: Uri,
+        val resolver: android.content.ContentResolver,
+    ) : PhotoTarget() {
+        override val displayPath: String get() = uri.toString()
+
+        override fun hasBytes(): Boolean = try {
+            resolver.openInputStream(uri)?.use { it.available() > 0 } ?: false
+        } catch (_: Exception) {
+            false
+        }
+
+        override fun cleanup() {
+            try {
+                resolver.delete(uri, null, null)
+            } catch (_: Exception) {
+                // Best-effort — MediaStore rows are GC'd by the system.
+            }
+        }
+    }
+
+    /** A sandbox-file output (older Android versions). */
+    data class SandboxTarget(
+        override val uri: Uri,
+        val file: File,
+    ) : PhotoTarget() {
+        override val displayPath: String get() = file.absolutePath
+
+        override fun hasBytes(): Boolean = file.exists() && file.length() > 0
+
+        override fun cleanup() {
+            try {
+                if (file.exists()) file.delete()
+            } catch (_: Exception) {
+                // ignore
+            }
+        }
+    }
+}
+
+/**
+ * Build the [PhotoTarget] for the next capture. Returns `null` if neither
+ * MediaStore nor the sandbox directory is usable.
+ */
+internal fun createPhotoTarget(context: Context): PhotoTarget? {
+    val ts = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+    val name = "sidekick_$ts.jpg"
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, name)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Sidekick")
+        }
+        val uri = context.contentResolver.insert(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            values,
+        ) ?: return null
+        return PhotoTarget.MediaStoreTarget(uri = uri, resolver = context.contentResolver)
+    }
+
+    // Pre-Q: write into the app sandbox and let the FileProvider expose it.
+    return try {
+        val dir = File(context.filesDir, "photos").apply { mkdirs() }
+        val file = File(dir, name)
+        val authority = "${context.packageName}.fileprovider"
+        val uri = androidx.core.content.FileProvider.getUriForFile(context, authority, file)
+        PhotoTarget.SandboxTarget(uri = uri, file = file)
+    } catch (_: Exception) {
+        null
     }
 }
 

@@ -172,12 +172,12 @@ class ThreeToolIsolationTest {
         val builderLoop = AgentLoop(provider = builderProvider, registry = registry)
 
         val coderMessages = listOf(
-            ChatMessage("system", "You are Coder."),
-            ChatMessage("user", "fix bug"),
+            ChatMessage.text("system", "You are Coder."),
+            ChatMessage.text("user", "fix bug"),
         )
         val builderMessages = listOf(
-            ChatMessage("system", "You are Builder."),
-            ChatMessage("user", "draft site"),
+            ChatMessage.text("system", "You are Builder."),
+            ChatMessage.text("user", "draft site"),
         )
 
         coroutineScope {
@@ -188,28 +188,28 @@ class ThreeToolIsolationTest {
 
             // Coder loop saw Coder's messages and produced Coder's reply.
             assertEquals(3, coderOut.size)
-            assertEquals("Coder: I'll refactor.", coderOut.last().content)
+            assertEquals("Coder: I'll refactor.", coderOut.last().content.asPlainText())
             assertEquals(1, coderProvider.requestCount)
             assertEquals(
                 "fix bug",
-                coderProvider.lastRequest().messages.last { it.role == "user" }.content,
+                coderProvider.lastRequest().messages.last { it.role == "user" }.content.asPlainText(),
             )
 
             // Builder loop saw Builder's messages and produced Builder's reply.
             assertEquals(3, builderOut.size)
-            assertEquals("Builder: I'll draft a site.", builderOut.last().content)
+            assertEquals("Builder: I'll draft a site.", builderOut.last().content.asPlainText())
             assertEquals(1, builderProvider.requestCount)
             assertEquals(
                 "draft site",
-                builderProvider.lastRequest().messages.last { it.role == "user" }.content,
+                builderProvider.lastRequest().messages.last { it.role == "user" }.content.asPlainText(),
             )
 
             // Cross-contamination guards: Coder's output must not contain
             // Builder's user message or system prompt, and vice versa.
-            assertTrue(coderOut.none { it.content == "draft site" })
-            assertTrue(coderOut.none { it.content == "You are Builder." })
-            assertTrue(builderOut.none { it.content == "fix bug" })
-            assertTrue(builderOut.none { it.content == "You are Coder." })
+            assertTrue(coderOut.none { it.content.asPlainText() == "draft site" })
+            assertTrue(coderOut.none { it.content.asPlainText() == "You are Builder." })
+            assertTrue(builderOut.none { it.content.asPlainText() == "fix bug" })
+            assertTrue(builderOut.none { it.content.asPlainText() == "You are Coder." })
         }
     }
 }

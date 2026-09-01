@@ -47,7 +47,7 @@ class OllamaProviderTest {
             modelName = "qwen2.5-coder:7b",
         )
         val request = LlmRequest(
-            messages = listOf(ChatMessage("user", "Say hi")),
+            messages = listOf(ChatMessage.text("user", "Say hi")),
         )
 
         // Collect chunks via callback into a list.
@@ -77,8 +77,8 @@ class OllamaProviderTest {
         )
         val request = LlmRequest(
             messages = listOf(
-                ChatMessage("system", "You are Coder."),
-                ChatMessage("user", "Hi"),
+                ChatMessage.text("system", "You are Coder."),
+                ChatMessage.text("user", "Hi"),
             ),
             temperature = 0.5,
             maxTokens = 64,
@@ -110,7 +110,7 @@ class OllamaProviderTest {
         )
         var thrown: Throwable? = null
         try {
-            provider.stream(LlmRequest(messages = listOf(ChatMessage("user", "x")))) {}.join()
+            provider.stream(LlmRequest(messages = listOf(ChatMessage.text("user", "x")))) {}.join()
         } catch (t: Throwable) {
             thrown = t
         }

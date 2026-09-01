@@ -119,7 +119,7 @@ class AgentLoop(
                 // as the assistant message — otherwise the tool message
                 // would be unanchored.
                 if (lastFullText.isNotEmpty()) {
-                    working.add(ChatMessage("assistant", lastFullText))
+                    working.add(ChatMessage.text("assistant", lastFullText))
                     lastFullText = ""
                 }
 
@@ -134,7 +134,7 @@ class AgentLoop(
                         is com.sidekick.app.tools.ToolResult.Ok -> r.output
                         is com.sidekick.app.tools.ToolResult.Err -> "[error] ${r.message}"
                     }
-                    working.add(ChatMessage("tool", toolContent))
+                    working.add(ChatMessage.text("tool", toolContent))
                 }
 
                 // Loop back to the provider with the augmented conversation.
@@ -145,7 +145,7 @@ class AgentLoop(
             if (done) {
                 onEvent(AgentEvent.TextDone(lastFullText))
                 if (lastFullText.isNotEmpty()) {
-                    working.add(ChatMessage("assistant", lastFullText))
+                    working.add(ChatMessage.text("assistant", lastFullText))
                 }
                 return working
             }
