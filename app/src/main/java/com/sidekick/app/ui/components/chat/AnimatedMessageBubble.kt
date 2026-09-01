@@ -1,61 +1,61 @@
 package com.sidekick.app.ui.components.chat
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 
 /**
- * A wrapper that animates its [content] in with a fade + slide
- * combination the first time it appears.
+ * A wrapper that animates its [content] in the first time it appears.
  *
- * The animation is intentionally subtle — the brand is "ink on paper",
- * so we don't add springy scale or rotation. A 12 dp upward slide
- * over 240 ms with a fade-in is enough to make the message feel like
- * it's "settling into" the transcript without stealing focus from the
- * surrounding UI.
+ * Entry is direction-aware: assistant bubbles slide in from the left,
+ * user bubbles from the right, matching where each sits in the
+ * transcript. A gentle scale-in (spring) plus a fade completes the
+ * "settling onto the page" feel. The brand is "ink on paper", so the
+ * spring is heavily damped — no bouncy overshoot, just a soft land.
  *
- * The animation only fires once per [AnimatedMessageBubble] instance —
- * subsequent recompositions (e.g., as the partial response grows)
- * skip the entry animation. This avoids the bubble jumping around on
- * every LLM token.
+ * The animation fires once per instance: `AnimatedVisibility` enters
+ * only when the item is first composed (each turn is a distinct
+ * LazyColumn item with a stable key), so a streaming assistant turn
+ * that accumulates text does NOT re-run the entry animation on every
+ * token. No extra gating state is needed for that.
  *
- * @param visible Whether the bubble is currently shown. When `false`,
- *                the bubble fades out.
- * @param content The bubble content. The wrapper only handles the
- *                entry/exit animation; layout is the content's job.
+ * @param visible Whether the bubble is shown. When `false` the bubble
+ *                fades out over 180 ms.
+ * @param fromUser When `true`, entry slides from the right (user side);
+ *                 otherwise from the left (assistant side).
+ * @param content The bubble content. Layout is the content's job.
  */
 @Composable
 fun AnimatedMessageBubble(
     visible: Boolean,
+    fromUser: Boolean,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
-    // Track the *first* composition with `visible == true`. Subsequent
-    // recompositions (the streaming assistant turn accumulates text)
-    // shouldn't re-trigger the entry animation — that would make the
-    // bubble "settle" on every token.
-    var hasAnimatedIn by remember { mutableStateOf(false) }
-    LaunchedEffect(visible) {
-        if (visible) hasAnimatedIn = true
-    }
     AnimatedVisibility(
         visible = visible,
         modifier = modifier,
-        enter = fadeIn(animationSpec = tween(durationMillis = 240, easing = LinearOutSlowInEasing)) +
-            slideInVertically(
-                animationSpec = tween(durationMillis = 240, easing = LinearOutSlowInEasing),
-                initialOffsetY = { fullHeight -> -fullHeight / 8 },
+        enter = fadeIn(animationSpec = tween(durationMillis = 220)) +
+            scaleIn(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow,
+                ),
+                initialScale = 0.96f,
+            ) +
+            slideInHorizontally(
+                animationSpec = tween(durationMillis = 220),
+                initialOffsetX = { fullWidth ->
+                    if (fromUser) fullWidth / 6 else -fullWidth / 6
+                },
             ),
         exit = fadeOut(animationSpec = tween(durationMillis = 180)),
     ) {
@@ -63,8 +63,4 @@ fun AnimatedMessageBubble(
             content()
         }
     }
-    // `hasAnimatedIn` is read on every recomposition to gate the
-    // re-entry animation in future variants. The reference is here
-    // so the compiler doesn't strip it.
-    @Suppress("UNUSED_EXPRESSION") hasAnimatedIn
 }

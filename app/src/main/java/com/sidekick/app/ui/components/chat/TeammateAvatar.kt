@@ -1,5 +1,10 @@
 package com.sidekick.app.ui.components.chat
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -8,9 +13,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -70,10 +77,27 @@ fun TeammateAvatar(
     icon: TeammateIcon,
     size: Dp = 32.dp,
     modifier: Modifier = Modifier,
+    isActive: Boolean = false,
 ) {
+    // A gentle "breathing" pulse while the teammate is generating a
+    // reply. Scale oscillates 1f <-> 1.08f over 900 ms. Inactive
+    // avatars hold steady at 1f with no running transition.
+    val pulse by rememberInfiniteTransition(label = "avatar-pulse")
+        .animateFloat(
+            initialValue = 1f,
+            targetValue = 1.08f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 900),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "avatar-scale",
+        )
+    val avatarScale = if (isActive) pulse else 1f
+
     Box(
         modifier = modifier
             .size(size)
+            .scale(avatarScale)
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .border(

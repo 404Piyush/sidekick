@@ -81,6 +81,7 @@ import com.sidekick.app.tools.builtins.createPhotoTarget
 import com.sidekick.app.ui.components.chat.AnimatedMessageBubble
 import com.sidekick.app.ui.components.chat.DateSeparator
 import com.sidekick.app.ui.components.chat.MarkdownText
+import com.sidekick.app.ui.components.chat.StreamingCursor
 import com.sidekick.app.ui.components.chat.TeammateAvatar
 import com.sidekick.app.ui.components.chat.TeammateIcon
 import com.sidekick.app.ui.components.chat.TypingIndicator
@@ -353,14 +354,14 @@ private fun TurnBubble(
     val displayContent = if (isStreamingAssistant && partialText.isNotEmpty()) partialText else turn.content
     val visible = displayContent.isNotEmpty() || isStreamingAssistant
 
-    AnimatedMessageBubble(visible = visible) {
+    AnimatedMessageBubble(visible = visible, fromUser = isUser) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
             verticalAlignment = Alignment.Top,
         ) {
             if (!isUser) {
-                TeammateAvatar(icon = teammateIcon)
+                TeammateAvatar(icon = teammateIcon, isActive = isStreamingAssistant)
                 Box(modifier = Modifier.size(8.dp))
             }
             Column(
@@ -404,6 +405,7 @@ private fun TurnBubble(
                     MarkdownText(source = displayContent)
                     if (isStreamingAssistant) {
                         TypingIndicator()
+                        StreamingCursor()
                     }
                 }
             }
