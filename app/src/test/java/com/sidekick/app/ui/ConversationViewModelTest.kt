@@ -274,6 +274,75 @@ class ConversationViewModelTest {
         assertEquals("cloud_openai", viewModel.state.value.activeProvider?.providerKind)
         assertEquals(invalidationsBefore + 1, router.invalidations)
     }
+
+    /**
+     * M4.5 wires [ConversationViewModel.selectModel] to the Ollama
+     * provider: switching models updates [ProviderConfigEntity.modelName],
+     * calls [LlmRouter.invalidate], and exposes the new model in
+     * [ConversationUiState.activeProvider] so the radio list can re-render.
+     *
+     * Mirrors [setProviderPersistsAndInvalidates] but operates one layer
+     * down — the provider kind stays `local_ollama`, only `modelName`
+     * changes.
+     */
+    @Test
+    fun selectModelPersistsAndInvalidates() = runBlocking {
+        viewModel.start()
+        delay(10)
+
+        // Sanity: the seed config in setUp() points at qwen2.5-coder:7b.
+        val initialActive = db.providerConfigDao().getActive()
+        assertEquals("qwen2.5-coder:7b", initialActive?.modelName)
+
+        val invalidationsBefore = router.invalidations
+        viewModel.selectModel("llama3.1:8b")
+        // State must reflect the new model before we assert.
+        while (viewModel.state.value.activeProvider?.modelName != "llama3.1:8b") delay(10)
+
+        val active = db.providerConfigDao().getActive()
+        assertEquals("llama3.1:8b", active?.modelName)
+        assertEquals("local_ollama", active?.providerKind)
+        assertTrue(active!!.isActive)
+        assertEquals("llama3.1:8b", viewModel.state.value.activeProvider?.modelName)
+        assertEquals(invalidationsBefore + 1, router.invalidations)
+    }
+
+    /**
+     * selectModel is a no-op on cloud providers — the user picks the
+     * model at provider config time, not from a registry. Verifies the
+     * DAO is not touched and the router is not invalidated.
+     */
+    @Test
+    fun selectModelIsNoOpOnCloudProviders() = runBlocking {
+        viewModel.start()
+        delay(10)
+
+        // Replace the active provider with a cloud one.
+        val newId = db.providerConfigDao().insert(
+            ProviderConfigEntity(
+                providerKind = "cloud_openai",
+                baseUrl = "https://api.openai.com/v1",
+                apiKey = "sk-test",
+                modelName = "gpt-4o-mini",
+                isActive = false,
+            ),
+        )
+        db.providerConfigDao().setActive(newId)
+        // Reload the state by re-running start() so the active provider
+        // updates — start() is idempotent on conversationId but refreshes
+        // the activeProvider field.
+        viewModel.start()
+        delay(10)
+
+        val invalidationsBefore = router.invalidations
+        viewModel.selectModel("gpt-5")
+        // Give the ioScope.launch a chance to settle.
+        delay(50)
+
+        val active = db.providerConfigDao().getActive()
+        assertEquals("gpt-4o-mini", active?.modelName) // unchanged
+        assertEquals(invalidationsBefore, router.invalidations) // no invalidate
+    }
 }
 
 /**
