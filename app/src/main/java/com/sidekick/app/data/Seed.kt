@@ -39,9 +39,9 @@ object Seed {
      * `strings.xml` if localisation shows up.
      */
     private val builtInTeammates: List<TeammateSeed> = listOf(
-        TeammateSeed(id = "coder", name = "Coder", tagline = "Refactors Kotlin, reads stack traces."),
-        TeammateSeed(id = "builder", name = "Builder", tagline = "Drafts sites, scripts, configs."),
-        TeammateSeed(id = "researcher", name = "Researcher", tagline = "Summarizes sources, cites links."),
+        TeammateSeed(id = "coder", name = "Coder", tagline = "Builds and fixes apps, scripts, and websites."),
+        TeammateSeed(id = "builder", name = "Builder", tagline = "Turns an idea or a photo into a finished page."),
+        TeammateSeed(id = "researcher", name = "Researcher", tagline = "Reads, summarises, and answers from anything you give it."),
     )
 
     /**

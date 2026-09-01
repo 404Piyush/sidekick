@@ -35,6 +35,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -333,7 +334,7 @@ private fun EmptyState(teammateTitle: String) {
             color = MaterialTheme.colorScheme.outline,
         )
         Text(
-            text = "Try asking $teammateTitle to refactor a function or summarise a note.",
+            text = "Try asking $teammateTitle to build a page, fix a problem, or explain something.",
             modifier = Modifier.padding(top = 8.dp),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.outline,
@@ -778,30 +779,34 @@ private fun SettingsSheet(
 
             Text("Provider", style = MaterialTheme.typography.titleMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
+                FilterChip(
+                    selected = pendingKind == "local_ollama",
                     onClick = { pendingKind = "local_ollama" },
-                    enabled = pendingKind != "local_ollama",
-                ) { Text("Local Ollama") }
-                Button(
+                    label = { Text("Local Ollama") },
+                )
+                FilterChip(
+                    selected = pendingKind == "cloud_openai",
                     onClick = { pendingKind = "cloud_openai" },
-                    enabled = pendingKind != "cloud_openai",
-                ) { Text("Cloud OpenAI") }
+                    label = { Text("Cloud OpenAI") },
+                )
             }
-            OutlinedTextField(
-                value = baseUrl,
-                onValueChange = { baseUrl = it },
-                label = { Text("Base URL") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-            OutlinedTextField(
-                value = modelName,
-                onValueChange = { modelName = it },
-                label = { Text("Model") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
             if (pendingKind == "cloud_openai") {
+                OutlinedTextField(
+                    value = baseUrl,
+                    onValueChange = { baseUrl = it },
+                    label = { Text("Base URL") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+            }
+            if (pendingKind == "cloud_openai") {
+                OutlinedTextField(
+                    value = modelName,
+                    onValueChange = { modelName = it },
+                    label = { Text("Model") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
                 OutlinedTextField(
                     value = apiKey,
                     onValueChange = { apiKey = it },

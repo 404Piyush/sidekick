@@ -17,9 +17,9 @@ import androidx.compose.ui.unit.dp
 import com.sidekick.app.ui.theme.SidekickTheme
 
 enum class Teammate(val title: String, val tagline: String) {
-    CODER("Coder", "Refactors Kotlin, reads stack traces."),
-    BUILDER("Builder", "Drafts sites, scripts, configs."),
-    RESEARCHER("Researcher", "Summarizes sources, cites links."),
+    CODER("Coder", "Builds and fixes apps, scripts, and websites."),
+    BUILDER("Builder", "Turns an idea or a photo into a finished page."),
+    RESEARCHER("Researcher", "Reads, summarises, and answers from anything you give it."),
 }
 
 @Composable
