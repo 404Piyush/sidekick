@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -136,6 +137,7 @@ fun ConversationScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val sheetState = rememberModalBottomSheetState()
     var settingsOpen by remember { mutableStateOf(false) }
+    var previewHtml by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
     val snackbarHost = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
@@ -251,6 +253,7 @@ fun ConversationScreen(
                                     isStreaming = state.isStreaming,
                                     teammateIcon = teammateIcon,
                                     teammateTitle = teammateTitle,
+                                    onPreview = { html -> previewHtml = html },
                                 )
                                 is TranscriptEntry.ToolCallEntry -> ToolCallBubble(call = entry.call)
                                 is TranscriptEntry.DateSeparatorEntry -> DateSeparatorRow(text = entry.label)
@@ -312,6 +315,13 @@ fun ConversationScreen(
             onActivateOnDevice = { viewModel.activateOnDeviceModel() },
         )
     }
+
+    previewHtml?.let { html ->
+        HtmlPreviewDialog(
+            html = html,
+            onDismiss = { previewHtml = null },
+        )
+    }
 }
 
 /**
@@ -353,6 +363,7 @@ private fun TurnBubble(
     isStreaming: Boolean,
     teammateIcon: TeammateIcon,
     teammateTitle: String,
+    onPreview: (String) -> Unit,
 ) {
     val isUser = turn.role == "user"
     val isStreamingAssistant = !isUser && turn.content.isEmpty() && isStreaming
@@ -371,18 +382,21 @@ private fun TurnBubble(
             }
             Column(
                 modifier = Modifier
+                    // Constrain bubble width so long messages don't span the
+                    // full screen — reads like a real messenger, not a log.
+                    .widthIn(max = 320.dp)
                     .background(
                         color = if (isUser) {
                             MaterialTheme.colorScheme.primary
                         } else {
                             MaterialTheme.colorScheme.surfaceVariant
                         },
-                        shape = RoundedCornerShape(16.dp),
-                    )
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(
+                            topStart = 18.dp,
+                            topEnd = 18.dp,
+                            bottomStart = if (isUser) 18.dp else 4.dp,
+                            bottomEnd = if (isUser) 4.dp else 18.dp,
+                        ),
                     )
                     .padding(horizontal = 14.dp, vertical = 10.dp),
             ) {
@@ -410,6 +424,17 @@ private fun TurnBubble(
                     MarkdownText(source = displayContent)
                     if (isStreamingAssistant) {
                         TypingIndicator()
+                    }
+                    // Offer a live preview when the assistant produced a
+                    // full HTML document (the "build a website" beat).
+                    val html = extractHtmlDocument(displayContent)
+                    if (html != null) {
+                        Box(modifier = Modifier.size(8.dp))
+                        TextButton(
+                            onClick = { onPreview(html) },
+                        ) {
+                            Text("Preview")
+                        }
                     }
                 }
             }

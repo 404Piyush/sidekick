@@ -34,6 +34,7 @@ import com.sidekick.app.tools.ToolRegistry
 import com.sidekick.app.tools.builtins.ListDir
 import com.sidekick.app.tools.builtins.ReadFile
 import com.sidekick.app.tools.builtins.TakePhoto
+import com.sidekick.app.tools.builtins.WriteFile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -639,7 +640,7 @@ class ConversationViewModel(
          * with image-tools; tests inject their own factory.
          */
         fun defaultToolRegistry(): ToolRegistry =
-            ToolRegistry(listOf(ReadFile(), ListDir(), TakePhoto()))
+            ToolRegistry(listOf(ReadFile(), WriteFile(), ListDir(), TakePhoto()))
 
         /**
          * Manual factory for production. Loads the database via

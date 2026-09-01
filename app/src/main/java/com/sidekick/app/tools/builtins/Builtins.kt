@@ -94,6 +94,69 @@ class ReadFile(
 }
 
 /**
+ * `write_file` — create or overwrite a UTF-8 text file in the app sandbox.
+ *
+ * The inverse of [ReadFile]. Lets a teammate actually *produce* artefacts
+ * (HTML pages, scripts, notes, configs) rather than only reading them.
+ * Same sandbox rule as [ReadFile]: [path] is relative to `filesDir`, and
+ * anything that canonicalises outside the sandbox is rejected.
+ *
+ * Directories are created on demand (`mkdirs`). The file is written
+ * atomically-ish: content goes to a `.tmp` sibling first, then is renamed
+ * into place so a crash mid-write never leaves a truncated file that
+ * looks complete.
+ *
+ * Schema: `{ "path": string, "content": string }`, both required.
+ */
+class WriteFile : Tool {
+
+    override val name: String = "write_file"
+    override val description: String =
+        "Create or overwrite a UTF-8 text file in the app sandbox. Path is relative to filesDir."
+
+    override val parameters: JsonObject = jsonSchema(
+        """
+        {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string", "description": "Path relative to filesDir, e.g. 'site/index.html'." },
+            "content": { "type": "string", "description": "Full text content to write." }
+          },
+          "required": ["path", "content"]
+        }
+        """.trimIndent(),
+    )
+
+    override suspend fun invoke(args: JsonObject, ctx: ToolContext): ToolResult {
+        val relPath = args["path"]?.jsonPrimitive?.contentOrNull
+        if (relPath.isNullOrBlank()) {
+            return ToolResult.Err("missing required argument: path")
+        }
+        val content = args["content"]?.jsonPrimitive?.contentOrNull
+            ?: return ToolResult.Err("missing required argument: content")
+
+        val resolved = resolveAgainstSandbox(ctx.appContext, relPath)
+            ?: return ToolResult.Err("path escapes sandbox: $relPath")
+
+        return try {
+            val parent = resolved.parentFile ?: return ToolResult.Err("invalid path: $relPath")
+            parent.mkdirs()
+            val tmp = File(parent, resolved.name + ".tmp")
+            tmp.writeText(content, Charsets.UTF_8)
+            if (!tmp.renameTo(resolved)) {
+                tmp.delete()
+                return ToolResult.Err("write failed: could not finalise $relPath")
+            }
+            ToolResult.Ok("wrote ${content.length} bytes to $relPath")
+        } catch (e: SecurityException) {
+            ToolResult.Err("permission denied: ${e.message ?: relPath}")
+        } catch (e: Exception) {
+            ToolResult.Err("write failed: ${e.message ?: e::class.simpleName.orEmpty()}")
+        }
+    }
+}
+
+/**
  * `list_dir` — list the entries of a directory in the app sandbox.
  *
  * Like [ReadFile], the path is relative to [Context.getFilesDir] and
