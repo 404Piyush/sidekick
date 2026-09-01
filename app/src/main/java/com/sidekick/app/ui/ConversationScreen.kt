@@ -19,10 +19,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,6 +38,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
@@ -203,15 +206,49 @@ fun ConversationScreen(
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
-            TopAppBar(
-                title = { Text(teammateTitle) },
+            // Polished header: teammate avatar, name with serif accent,
+            // and a quiet "online" status dot. Sets the tone that this is
+            // a teammate, not a search bar.
+            CenterAlignedTopAppBar(
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        TeammateAvatar(
+                            icon = TeammateIcon.fromSlug(teammateSlug),
+                            size = 32.dp,
+                            isActive = state.isStreaming,
+                        )
+                        Column {
+                            Text(
+                                text = teammateTitle,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = if (state.isStreaming) "Thinking…" else "Online",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (state.isStreaming)
+                                    MaterialTheme.colorScheme.primary
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            )
+                        }
+                    }
+                },
                 actions = {
                     IconButton(onClick = { settingsOpen = true }) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Settings",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 },
             )
         },
+        containerColor = MaterialTheme.colorScheme.background,
     ) { innerPadding ->
         Column(
             modifier = Modifier
@@ -248,20 +285,32 @@ fun ConversationScreen(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(items = entries, key = { it.id }) { entry ->
-                            when (entry) {
-                                is TranscriptEntry.TurnEntry -> TurnBubble(
-                                    turn = entry.turn,
-                                    partialText = state.partialResponse,
-                                    isStreaming = state.isStreaming,
-                                    teammateIcon = teammateIcon,
-                                    teammateTitle = teammateTitle,
-                                    onPreview = { html -> previewHtml = html },
-                                )
-                                is TranscriptEntry.ToolCallEntry -> ToolCallBubble(call = entry.call)
-                                is TranscriptEntry.DateSeparatorEntry -> DateSeparatorRow(text = entry.label)
+                        itemsIndexed(items = entries, key = { _, it -> it.id }) { idx, entry ->
+                            // Per-item spacing: tighter when this entry groups
+                            // with the previous (same-role messages read as a
+                            // single turn), wider otherwise.
+                            val gap = when {
+                                idx == 0 -> 0.dp
+                                entry is TranscriptEntry.TurnEntry &&
+                                    entries[idx - 1] is TranscriptEntry.TurnEntry &&
+                                    (entries[idx - 1] as TranscriptEntry.TurnEntry).turn.role ==
+                                    entry.turn.role -> 2.dp
+                                else -> 12.dp
+                            }
+                            Box(modifier = Modifier.padding(top = gap)) {
+                                when (entry) {
+                                    is TranscriptEntry.TurnEntry -> TurnBubble(
+                                        turn = entry.turn,
+                                        partialText = state.partialResponse,
+                                        isStreaming = state.isStreaming,
+                                        teammateIcon = teammateIcon,
+                                        teammateTitle = teammateTitle,
+                                        onPreview = { html -> previewHtml = html },
+                                    )
+                                    is TranscriptEntry.ToolCallEntry -> ToolCallBubble(call = entry.call)
+                                    is TranscriptEntry.DateSeparatorEntry -> DateSeparatorRow(text = entry.label)
+                                }
                             }
                         }
                         state.error?.let { err ->
@@ -376,35 +425,40 @@ private fun TurnBubble(
     val visible = displayContent.isNotEmpty() || isStreamingAssistant
 
     AnimatedMessageBubble(visible = visible, fromUser = isUser) {
-        Row(
+        Column(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
-            verticalAlignment = Alignment.Top,
+            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
+            // Tighter vertical gap when this message groups with the previous
+            // one — reads like a real messenger thread, not a stack.
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            if (!isUser) {
-                TeammateAvatar(icon = teammateIcon, isActive = isStreamingAssistant)
-                Box(modifier = Modifier.size(8.dp))
-            }
-            Column(
-                modifier = Modifier
-                    // Constrain bubble width so long messages don't span the
-                    // full screen — reads like a real messenger, not a log.
-                    .widthIn(max = 320.dp)
-                    .background(
-                        color = if (isUser) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant
-                        },
-                        shape = RoundedCornerShape(
-                            topStart = 18.dp,
-                            topEnd = 18.dp,
-                            bottomStart = if (isUser) 18.dp else 4.dp,
-                            bottomEnd = if (isUser) 4.dp else 18.dp,
-                        ),
-                    )
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Top,
             ) {
+                if (!isUser) {
+                    TeammateAvatar(icon = teammateIcon, isActive = isStreamingAssistant)
+                }
+                Column(
+                    modifier = Modifier
+                        // Constrain bubble width so long messages don't span
+                        // the full screen — reads like a real messenger.
+                        .widthIn(max = 320.dp)
+                        .background(
+                            color = if (isUser) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            },
+                            shape = RoundedCornerShape(
+                                topStart = 18.dp,
+                                topEnd = 18.dp,
+                                bottomStart = if (isUser) 18.dp else 4.dp,
+                                bottomEnd = if (isUser) 4.dp else 18.dp,
+                            ),
+                        )
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                ) {
                 Text(
                     text = if (isUser) "You" else teammateTitle,
                     style = MaterialTheme.typography.labelSmall,
@@ -442,20 +496,26 @@ private fun TurnBubble(
                         }
                     }
                 }
+                }
+                // Right-side user placeholder for visual balance with the
+                // assistant's left-side avatar. Hidden on the assistant side
+                // because the avatar already lives there.
+                if (isUser) {
+                    Spacer(modifier = Modifier.size(32.dp))
+                }
             }
-            if (isUser) {
-                Box(modifier = Modifier.size(8.dp))
-                // User gets a placeholder right-side avatar slot so the
-                // bubble doesn't lean all the way to the edge. The
-                // circle stays empty — the "You" label inside the
-                // bubble is enough identification.
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .background(
-                            color = MaterialTheme.colorScheme.outlineVariant,
-                            shape = RoundedCornerShape(50),
-                        ),
+            // Timestamp under the bubble, aligned to the bubble's edge.
+            // Hidden while streaming — the "Thinking…" header is enough.
+            if (!isStreamingAssistant) {
+                Text(
+                    text = formatRelativeTimestamp(turn.createdAt),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.padding(
+                        top = 2.dp,
+                        start = if (isUser) 0.dp else 40.dp, // avatar width + gap
+                        end = if (isUser) 0.dp else 0.dp,
+                    ),
                 )
             }
         }
