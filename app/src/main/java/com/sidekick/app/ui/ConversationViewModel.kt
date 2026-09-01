@@ -23,6 +23,7 @@ import com.sidekick.app.provider.LlmException
 import com.sidekick.app.provider.LlmRouter
 import com.sidekick.app.provider.MessageContent
 import com.sidekick.app.provider.MessagePart
+import com.sidekick.app.provider.OllamaModelManager
 import com.sidekick.app.provider.Provider
 import com.sidekick.app.tools.CameraLauncher
 import com.sidekick.app.tools.ToolContext
@@ -443,7 +444,7 @@ class ConversationViewModel(
      *
      * Ollama only — `Provider.CloudOpenAI` doesn't have a model registry
      * the user picks from; you set the model in [setProvider] when configuring
-     * the cloud endpoint. Calling [ModelFor on a cloud provider is a no-op.
+     * the cloud endpoint. Calling [selectModel] on a cloud provider is a no-op.
      */
     fun selectModel(modelId: String) {
         ioScope.launch {
@@ -458,6 +459,39 @@ class ConversationViewModel(
             _state.value = _state.value.copy(activeProvider = updated)
         }
     }
+
+    /**
+     * The curated list of recommended Ollama models shown as chips in the
+     * pull dialog. Static — the recommendations don't depend on what's
+     * already installed on the server.
+     */
+    val curatedModels: List<String> = OllamaModelManager.CURATED_NAMES
+
+    /**
+     * Fetch the model names currently installed on the Ollama server at
+     * [baseUrl]. Returns an empty list when [baseUrl] is blank or the
+     * server is unreachable; callers should treat that as "no models yet"
+     * and surface the pull dialog.
+     */
+    suspend fun listLocalModels(baseUrl: String): List<String> {
+        if (baseUrl.isBlank()) return emptyList()
+        return try {
+            OllamaModelManager(baseUrl = baseUrl).listLocal()
+        } catch (e: Exception) {
+            // Don't crash the UI for a network blip — the pull dialog
+            // covers the error case (no chip, blank list).
+            emptyList()
+        }
+    }
+
+    /**
+     * Stream pull progress for [modelId] from the Ollama server at
+     * [baseUrl]. Wraps [OllamaModelManager.pull] with the same error
+     * swallowing policy as [listLocalModels] — the UI already shows a
+     * progress row that fails gracefully on stream errors.
+     */
+    fun pullModel(baseUrl: String, modelId: String) =
+        OllamaModelManager(baseUrl = baseUrl).pull(modelId)
 
     /**
      * Queue a captured image URI for the next user turn. Called by the
@@ -512,6 +546,12 @@ class ConversationViewModel(
         /**
          * Manual factory for production. Loads the database via
          * [provideDatabase]. Seeding happens lazily on the first [start] call.
+         *
+         * M4.5 doesn't inject [OllamaModelManager] directly — the settings
+         * sheet reads the active provider's base URL from [ConversationUiState]
+         * and constructs an ephemeral manager per access. This avoids the
+         * suspend-DAO-in-factory problem and keeps the manager close to the
+         * UI code that drives it.
          */
         fun factory(context: Context, teammateSlug: String, title: String): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
