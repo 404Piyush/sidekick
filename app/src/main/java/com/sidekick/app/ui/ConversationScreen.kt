@@ -480,7 +480,13 @@ private fun TurnBubble(
                         color = MaterialTheme.colorScheme.onPrimary,
                     )
                 } else {
-                    MarkdownText(source = displayContent)
+                    // If the reply contains a full HTML document, show
+                    // only the prose around it — never the raw source.
+                    // The Preview button below carries the artefact.
+                    val chatText = extractHtmlDocument(displayContent)
+                        ?.let { stripHtmlDocument(displayContent) }
+                        ?: displayContent
+                    MarkdownText(source = chatText)
                     if (isStreamingAssistant) {
                         TypingIndicator()
                     }

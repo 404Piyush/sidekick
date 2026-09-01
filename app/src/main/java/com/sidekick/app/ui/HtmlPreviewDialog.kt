@@ -97,6 +97,19 @@ fun HtmlPreviewDialog(
  *
  * Returns the full HTML string when it looks like a document, else null.
  */
+/**
+ * Detect whether an assistant reply is a full, self-contained HTML document
+ * worth offering a preview for.
+ *
+ * Heuristic (deliberately loose — the model isn't guaranteed to emit a
+ * perfect `<!DOCTYPE html>`):
+ *  - The text contains an `<html` opening tag, AND
+ *  - it contains a `<body` or `<head` tag, AND
+ *  - the total length is under ~200 KB (bigger and it's probably not a
+ *    hand-written page, or it's a dump that won't render meaningfully).
+ *
+ * Returns the full HTML string when it looks like a document, else null.
+ */
 fun extractHtmlDocument(text: String): String? {
     // Strip a leading markdown code fence if present — models almost always
     // wrap HTML in ```html ... ``` or ``` ... ```. Unwrap it so the
@@ -113,4 +126,35 @@ fun extractHtmlDocument(text: String): String? {
     if (!lower.contains("<body") && !lower.contains("<head") && !lower.contains("<style")) return null
     if (html.length > 200_000) return null
     return html
+}
+
+/**
+ * Return the chat-friendly version of [text]: the prose lines around an
+ * embedded HTML/code block, with the HTML itself removed. Used by the
+ * chat bubble so the user sees only Builder's one-liner intro + the
+ * Preview button — never the raw HTML source.
+ *
+ * If the text contains no HTML/code block, returns [text] unchanged.
+ * Strips:
+ *  - A fenced ```html … ``` (or ``` … ```) block, anywhere in the text
+ *  - An unfenced raw HTML document (everything from `<!DOCTYPE` or
+ *    `<html` to the closing `</html>`, if those markers are present)
+ */
+fun stripHtmlDocument(text: String): String {
+    val fenceRegex = Regex(
+        "```(?:html|HTML)?\\s*\\n.*?\\n```",
+        setOf(RegexOption.DOT_MATCHES_ALL),
+    )
+    var stripped = fenceRegex.replace(text, "")
+
+    // Unfenced raw HTML — `<!DOCTYPE html>...</html>` block.
+    val rawRegex = Regex(
+        "<!DOCTYPE[^>]*>.*?</html>",
+        setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE),
+    )
+    stripped = rawRegex.replace(stripped, "")
+
+    // Collapse the multiple blank lines that typically follow the strip.
+    stripped = stripped.replace(Regex("\\n{3,}"), "\n\n").trim()
+    return stripped
 }
