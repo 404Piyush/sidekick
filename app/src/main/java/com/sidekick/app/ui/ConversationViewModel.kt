@@ -419,10 +419,14 @@ class ConversationViewModel(
             ),
         )
         conversationDao.touch(cid, clock())
+        // We persist the error into the assistant turn, so the inline
+        // "[error] ..." bubble carries it. Clear the transient chip-state so
+        // the user doesn't see the same error twice (chip below the
+        // transcript AND bubble inside the transcript).
         _state.value = _state.value.copy(
             isStreaming = false,
             partialResponse = "",
-            error = err,
+            error = null,
         )
     }
 
