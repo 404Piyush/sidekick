@@ -3,13 +3,23 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!--
+      Sidekick launcher mark.
+      Design: a serif "S" monogram sitting inside a soft rounded square,
+      rendered in the ink-wash palette (#F5F3EF on #252525) so it
+      matches the marketing wordmark and the in-app dark theme.
+    -->
+
+    <!-- Background: ink (#252525) rounded square -->
+    <path
+        android:fillColor="#252525"
+        android:pathData="M30,30 L78,30 A6,6 0 0 1 84,36 L84,72 A6,6 0 0 1 78,78 L30,78 A6,6 0 0 1 24,72 L24,36 A6,6 0 0 1 30,30 Z" />
+
+    <!-- Serif "S" glyph in paper (#F5F3EF). Bold, slightly stylised so it
+         reads clearly at small sizes (the launcher icon is ~48dp on most
+         launchers). Two stacked C-curves joined by a diagonal — the
+         classic serif S shape, simplified. -->
     <path
         android:fillColor="#F5F3EF"
-        android:pathData="M54,30 L72,54 L54,78 L36,54 Z" />
-    <path
-        android:fillColor="#F5F3EF"
-        android:pathData="M44,46 L64,46 L64,52 L44,52 Z" />
-    <path
-        android:fillColor="#F5F3EF"
-        android:pathData="M44,56 L64,56 L64,62 L44,62 Z" />
+        android:pathData="M62,46.5 C62,42.5 58.5,40 54,40 C49.5,40 46,42.5 46,46 C46,49 48.5,50.5 53,51.5 L58,52.5 C64,53.5 67,56 67,60 C67,64 63,67 57.5,67 C52,67 48,64 48,59.5 L52,59.5 C52,62 54.5,63.5 57.5,63.5 C60.5,63.5 63,62 63,59.5 C63,57 60.5,55.5 56.5,54.5 L52,53.5 C46.5,52 44,49.5 44,46 C44,42 47.5,39.5 54,39.5 C60.5,39.5 64,42 64,46.5 Z" />
 </vector>
