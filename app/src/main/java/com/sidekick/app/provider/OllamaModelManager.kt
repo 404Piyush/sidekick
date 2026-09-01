@@ -1,10 +1,10 @@
 package com.sidekick.app.provider
 
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -15,7 +15,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import okhttp3.Call
-import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -68,7 +67,7 @@ class OllamaModelManager(
                 // OkHttp may have already raced the cancel; ignore.
             }
         }
-        call.enqueue(object : Callback {
+        call.enqueue(object : okhttp3.Callback {
             override fun onFailure(call: Call, e: IOException) {
                 cont.resumeWithException(
                     LlmException.Network("Could not list local models: ${e.message}", e),
@@ -123,8 +122,14 @@ class OllamaModelManager(
      * 0..100 percentage; status-only lines use `-1` so the UI knows the
      * pull is alive without claiming a percentage. The terminal
      * `{"status":"success"}` line completes the flow.
+     *
+     * Implementation note: uses [channelFlow] (not [kotlinx.coroutines.flow.callbackFlow])
+     * because the request has a finite lifespan — once the success line
+     * arrives the producer finishes naturally and the channel closes.
+     * `callbackFlow` is designed for event sources that need to wait for
+     * external cancellation, which hangs forever after a natural close.
      */
-    fun pull(modelId: String): Flow<LlmChunk.PullProgress> = callbackFlow {
+    fun pull(modelId: String): Flow<LlmChunk.PullProgress> = channelFlow {
         val request = Request.Builder()
             .url(baseUrl.trimEnd('/') + "/api/pull")
             .post(
@@ -133,49 +138,46 @@ class OllamaModelManager(
             )
             .build()
 
+        // Run the blocking OkHttp call in a child coroutine so the channel
+        // can close naturally when the producer finishes (and so consumer
+        // cancellation propagates into the OkHttp Call).
         val call = client.newCall(request)
-        // Close the OkHttp call when the consumer cancels the flow so the
-        // socket is released back to the pool. callbackFlow's awaitClose
-        // is the only place this is guaranteed to run.
-        awaitClose {
+        launch(Dispatchers.IO) {
             try {
-                call.cancel()
-            } catch (_: Throwable) {
-                // Ignore: the call may already have completed or been cancelled.
-            }
-        }
-        call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                close(
-                    LlmException.Network("Could not pull $modelId: ${e.message}", e),
-                )
-            }
-            override fun onResponse(call: Call, response: Response) {
+                val response = call.awaitResponseOrThrow("Could not pull $modelId")
                 response.use { r ->
                     if (!r.isSuccessful) {
                         val snippet = r.body?.string()?.take(200).orEmpty()
-                        close(
-                            LlmException.HttpStatus(
-                                code = r.code,
-                                message = "Ollama /api/pull returned HTTP ${r.code}: $snippet",
-                            ),
+                        throw LlmException.HttpStatus(
+                            code = r.code,
+                            message = "Ollama /api/pull returned HTTP ${r.code}: $snippet",
                         )
-                        return
                     }
                     val source = r.body?.source()
-                    if (source == null) {
-                        close(LlmException.Decode("Ollama /api/pull returned empty body"))
-                        return
-                    }
-                    try {
-                        streamLines(source) { progress -> trySend(progress) }
-                        close()
-                    } catch (e: Exception) {
-                        close(e.toLlmException())
+                        ?: throw LlmException.Decode("Ollama /api/pull returned empty body")
+                    streamLines(source) { progress ->
+                        // send is suspending inside channelFlow; use
+                        // trySend which is safe here because the channel
+                        // has buffer = RENDEZVOUS by default and the
+                        // consumer is always suspending on next() during
+                        // a long pull.
+                        trySend(progress)
                     }
                 }
+            } catch (e: Exception) {
+                throw e.toLlmException()
             }
-        })
+        }.invokeOnCompletion { cause ->
+            // If the consumer cancelled mid-pull, cancel the OkHttp call
+            // so the socket is released.
+            if (cause != null) {
+                try {
+                    call.cancel()
+                } catch (_: Throwable) {
+                    // Already cancelled or completed; ignore.
+                }
+            }
+        }
     }.flowOn(Dispatchers.IO)
 
     private fun streamLines(source: BufferedSource, emit: (LlmChunk.PullProgress) -> Unit) {
@@ -192,13 +194,17 @@ class OllamaModelManager(
                     )
                 }
                 val obj = element.jsonObject
-                val status = obj["status"]?.jsonPrimitive?.contentOrNull ?: continue
 
-                // Provider error envelope: {"error": "..."}
+                // Provider error envelope: {"error": "..."} (may also lack a
+                // status field). Check this BEFORE the status guard so we
+                // surface pull failures as exceptions rather than silently
+                // skipping the line.
                 obj["error"]?.let { err ->
                     val msg = err.jsonPrimitive.contentOrNull ?: err.toString()
                     throw LlmException.ProviderSpecific("Ollama pull error: $msg")
                 }
+
+                val status = obj["status"]?.jsonPrimitive?.contentOrNull ?: continue
 
                 val digest = obj["digest"]?.jsonPrimitive?.contentOrNull
                 val total = obj["total"]?.jsonPrimitive?.longOrNull
@@ -238,7 +244,12 @@ class OllamaModelManager(
             encodeDefaults = true
         }
 
-        private val curated = listOf(
+        /**
+         * Curated list of recommended Ollama library names. Exposed as a
+         * public constant so the UI layer can render chips without needing
+         * to construct a manager first.
+         */
+        val CURATED_NAMES: List<String> = listOf(
             "qwen2.5-coder:7b",
             "qwen2.5-coder:3b",
             "llama3.1:8b",
@@ -248,6 +259,8 @@ class OllamaModelManager(
             "deepseek-coder-v2:16b",
             "codestral:22b",
         )
+
+        private val curated = CURATED_NAMES
     }
 }
 
@@ -255,3 +268,28 @@ private fun Throwable.toLlmException(): LlmException = when (this) {
     is LlmException -> this
     else -> LlmException.Network(message ?: this::class.simpleName.orEmpty(), this)
 }
+
+/**
+ * Bridge OkHttp's callback API to coroutines, throwing
+ * [LlmException.Network] on failure. Mirrors the helper in
+ * [OllamaProvider] — duplicated here to keep the manager self-contained
+ * (callers don't need to import OllamaProvider's internal types).
+ */
+private suspend fun Call.awaitResponseOrThrow(prefix: String): Response =
+    suspendCancellableCoroutine { cont ->
+        cont.invokeOnCancellation {
+            try {
+                cancel()
+            } catch (_: Throwable) {
+                // OkHttp may already have raced the cancel; ignore.
+            }
+        }
+        enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                cont.resumeWithException(LlmException.Network("$prefix: ${e.message}", e))
+            }
+            override fun onResponse(call: Call, response: Response) {
+                cont.resume(response)
+            }
+        })
+    }
