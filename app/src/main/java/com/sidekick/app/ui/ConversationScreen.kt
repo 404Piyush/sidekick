@@ -146,6 +146,7 @@ fun ConversationScreen(
     val sheetState = rememberModalBottomSheetState()
     var settingsOpen by remember { mutableStateOf(false) }
     var previewHtml by remember { mutableStateOf<String?>(null) }
+    var showAttachChooser by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val snackbarHost = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
@@ -178,6 +179,35 @@ fun ConversationScreen(
             }
         }
     }
+
+    // Photo-picker for "choose from gallery" — works without any storage
+    // permission on Android 13+ thanks to the visual-media picker.
+    var pendingGalleryUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) {
+            // Persist read permission so the URI survives across the app
+            // process boundary and the model can read the bytes off the
+            // IO dispatcher.
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            } catch (_: SecurityException) {
+                // Some providers (e.g. emulator gallery) don't grant
+                // persistable permission — the URI is still usable for
+                // the current request, so we proceed.
+            }
+            pendingGalleryUri = uri
+            viewModel.setPendingImage(uri.toString())
+        }
+    }
+    // Drain the local state into the ViewModel once the dialog is gone
+    // (the dialog dismisses before the pick result returns, so we
+    // remember-then-commit here to avoid a stale-state race).
+    LaunchedEffect(pendingGalleryUri) { pendingGalleryUri = null }
 
     val onCameraClick: () -> Unit = cameraClick@{
         if (!state.cameraEnabled) return@cameraClick
@@ -336,7 +366,7 @@ fun ConversationScreen(
                 pendingImageUri = state.pendingImageUri,
                 onClearImage = { viewModel.setPendingImage(null) },
                 cameraEnabled = state.cameraEnabled,
-                onCameraClick = onCameraClick,
+                onAttachClick = { showAttachChooser = true },
                 onSend = { text ->
                     val pending = state.pendingImageUri
                     if (pending != null) {
@@ -348,6 +378,37 @@ fun ConversationScreen(
                 enabled = !state.isStreaming,
             )
         }
+    }
+
+    if (showAttachChooser) {
+        AlertDialog(
+            onDismissRequest = { showAttachChooser = false },
+            title = { Text("Attach image") },
+            text = { Text("Pick a photo to send with your message.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showAttachChooser = false
+                        // Photo picker — works without storage permission.
+                        galleryLauncher.launch(
+                            androidx.activity.result.PickVisualMediaRequest(
+                                ActivityResultContracts.PickVisualMedia.ImageOnly,
+                            ),
+                        )
+                    },
+                ) { Text("Choose from gallery") }
+            },
+            dismissButton = {
+                if (state.cameraEnabled) {
+                    TextButton(
+                        onClick = {
+                            showAttachChooser = false
+                            onCameraClick()
+                        },
+                    ) { Text("Take photo") }
+                }
+            },
+        )
     }
 
     if (settingsOpen) {
@@ -650,7 +711,7 @@ private fun InputBar(
     pendingImageUri: String?,
     onClearImage: () -> Unit,
     cameraEnabled: Boolean,
-    onCameraClick: () -> Unit,
+    onAttachClick: () -> Unit,
     onSend: (String) -> Unit,
     enabled: Boolean,
 ) {
@@ -665,14 +726,12 @@ private fun InputBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (cameraEnabled) {
-                IconButton(onClick = onCameraClick, enabled = enabled) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Attach",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            IconButton(onClick = onAttachClick, enabled = enabled) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = "Attach image",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             // Modern pill-shaped input field.
             Row(
