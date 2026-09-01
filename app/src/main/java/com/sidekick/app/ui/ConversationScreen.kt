@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.sidekick.app.data.ProviderConfigEntity
+import com.sidekick.app.data.ToolCallEntity
 import com.sidekick.app.data.TurnEntity
 import com.sidekick.app.ui.theme.SidekickTheme
 
@@ -116,14 +117,32 @@ fun ConversationScreen(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 } else {
+                    // Build a flat list of "transcript entries" — turns
+                    // interleaved with their tool calls — so we can render
+                    // them with a single LazyColumn `items` call (a nested
+                    // `items` isn't supported inside the outer one).
+                    val entries: List<TranscriptEntry> = buildList {
+                        for (turn in state.messages) {
+                            add(TranscriptEntry.TurnEntry(turn))
+                            state.toolCallsByTurn[turn.id].orEmpty().forEach { call ->
+                                add(TranscriptEntry.ToolCallEntry(call))
+                            }
+                        }
+                    }
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(items = state.messages, key = { it.id }) { turn ->
-                            TurnBubble(turn = turn, partialText = state.partialResponse)
+                        items(items = entries, key = { it.id }) { entry ->
+                            when (entry) {
+                                is TranscriptEntry.TurnEntry -> TurnBubble(
+                                    turn = entry.turn,
+                                    partialText = state.partialResponse,
+                                )
+                                is TranscriptEntry.ToolCallEntry -> ToolCallBubble(call = entry.call)
+                            }
                         }
                     }
                     LaunchedEffect(state.messages.size) {
@@ -177,6 +196,27 @@ private fun TurnBubble(turn: TurnEntity, partialText: String) {
                 style = MaterialTheme.typography.bodyLarge,
             )
         }
+    }
+}
+
+/**
+ * Compact one-line render of a [ToolCallEntity]. M3 shows the tool name
+ * + args summary; M4 will render a richer preview (e.g. image
+ * thumbnail for camera calls).
+ */
+@Composable
+private fun ToolCallBubble(call: ToolCallEntity) {
+    val summary = "${call.toolName}(${call.argsJson})"
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Start,
+    ) {
+        Text(
+            text = "• $summary",
+            modifier = Modifier.padding(start = 8.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
     }
 }
 
@@ -323,5 +363,22 @@ private fun ConversationScreenPreview() {
         // home-screen preview instead. Compose previews don't exercise the
         // real data layer.
         Text("ConversationScreen — preview unavailable (real ViewModel needed)")
+    }
+}
+
+/**
+ * One item in the rendered transcript. Turns and tool calls are
+ * interleaved into a single list so the [LazyColumn] can `items` them
+ * flat — nested `items` calls aren't supported.
+ */
+private sealed class TranscriptEntry {
+    abstract val id: Long
+
+    data class TurnEntry(val turn: com.sidekick.app.data.TurnEntity) : TranscriptEntry() {
+        override val id: Long get() = turn.id
+    }
+
+    data class ToolCallEntry(val call: com.sidekick.app.data.ToolCallEntity) : TranscriptEntry() {
+        override val id: Long get() = call.id
     }
 }

@@ -6,6 +6,7 @@ import com.sidekick.app.data.AppDatabase
 import com.sidekick.app.data.ProviderConfigEntity
 import com.sidekick.app.data.TeammateEntity
 import com.sidekick.app.provider.LlmChunk
+import com.sidekick.app.provider.LlmClient
 import com.sidekick.app.provider.LlmException
 import com.sidekick.app.provider.LlmRequest
 import com.sidekick.app.provider.LlmRouter
@@ -92,6 +93,7 @@ class ConversationViewModelTest {
         viewModel = ConversationViewModel(
             conversationDao = db.conversationDao(),
             turnDao = db.turnDao(),
+            toolCallDao = db.toolCallDao(),
             teammateDao = db.teammateDao(),
             providerConfigDao = db.providerConfigDao(),
             router = router,
@@ -315,8 +317,11 @@ private suspend fun AppDatabase.waitForAssistant(
 }
 
 /**
- * Hand-rolled test double for [LlmRouter] — exposes a [script] lambda the
- * caller can set per-test. Records invalidations for assertions.
+ * Hand-rolled test double for [LlmRouter]. The M3 ViewModel calls
+ * [LlmRouter.clientFor] to obtain an [LlmClient] for the active provider
+ * (instead of asking the router to stream directly), so this fake exposes
+ * a `clientFor` that returns a [ScriptedClient] backed by the same
+ * [script] lambda the M2 tests set up.
  *
  * `LlmRouter` was opened in M2 so tests can subclass it (the original M1
  * tests use the default implementation directly).
@@ -328,6 +333,10 @@ private class FakeRouter : LlmRouter() {
 
     @Volatile var invalidations: Int = 0
 
+    private val scriptedClient = ScriptedClient()
+
+    override fun clientFor(provider: Provider): LlmClient = scriptedClient
+
     override suspend fun stream(
         provider: Provider,
         request: LlmRequest,
@@ -337,5 +346,11 @@ private class FakeRouter : LlmRouter() {
     override fun invalidate(provider: Provider) {
         invalidations += 1
         super.invalidate(provider)
+    }
+
+    /** Forwards every stream call to the shared [script] lambda. */
+    private inner class ScriptedClient : LlmClient {
+        override suspend fun stream(request: LlmRequest, onChunk: (LlmChunk) -> Unit): Job =
+            script(request, onChunk)
     }
 }

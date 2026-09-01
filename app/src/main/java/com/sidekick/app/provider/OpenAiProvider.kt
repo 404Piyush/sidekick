@@ -11,6 +11,10 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
+import com.sidekick.app.tools.ToolDescriptor
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
@@ -70,6 +74,23 @@ class OpenAiProvider(
     }
 
     private fun buildRequest(request: LlmRequest): Request {
+        // Convert [ToolDescriptor] into OpenAI's wire shape:
+        //   [{ "type": "function", "function": { "name": ..., "description": ..., "parameters": <schema> } }]
+        val toolDescriptors: List<ToolDescriptor> = request.tools.orEmpty()
+        val toolsJson: List<JsonElement>? = if (toolDescriptors.isEmpty()) {
+            null
+        } else {
+            toolDescriptors.map { d: ToolDescriptor ->
+                buildJsonObject {
+                    put("type", JsonPrimitive("function"))
+                    put("function", buildJsonObject {
+                        put("name", JsonPrimitive(d.name))
+                        put("description", JsonPrimitive(d.description))
+                        put("parameters", d.parameters)
+                    })
+                }
+            }
+        }
         val body = OpenAiRequest(
             model = modelName,
             messages = request.messages.map { OpenAiMessage(it.role, it.content) },
@@ -80,6 +101,7 @@ class OpenAiProvider(
             // Older / third-party servers that don't understand this field
             // ignore unknown keys because of `ignoreUnknownKeys = true`.
             streamOptions = OpenAiStreamOptions(includeUsage = true),
+            tools = toolsJson,
         )
         val json = json.encodeToString(OpenAiRequest.serializer(), body)
         val url = apiBaseUrl.trimEnd('/') + "/chat/completions"
@@ -140,6 +162,34 @@ class OpenAiProvider(
             if (content != null && content.isNotEmpty()) {
                 onChunk(LlmChunk.Text(content))
             }
+            // Tool-call deltas: OpenAI streams tool_calls as a list where each
+            // entry's `function.arguments` may be partial. We accumulate
+            // per-index into [pendingToolCalls] until the index sends no more
+            // deltas (we flush on each chunk — the LlmChunk.ToolCall emits
+            // the latest snapshot, and the agent loop uses the final one).
+            val toolCalls = choice["delta"]?.jsonObject?.get("tool_calls")?.jsonArray
+            if (toolCalls != null) {
+                for (tcEl in toolCalls) {
+                    val tc = tcEl.jsonObject
+                    val index = tc["index"]?.jsonPrimitive?.intOrNull ?: 0
+                    val entry = pendingToolCalls.getOrPut(index) { ToolCallAccumulator() }
+                    tc["id"]?.jsonPrimitive?.contentOrNull?.let { entry.id = it }
+                    val fn = tc["function"]?.jsonObject
+                    if (fn != null) {
+                        fn["name"]?.jsonPrimitive?.contentOrNull?.let { entry.name = it }
+                        fn["arguments"]?.jsonPrimitive?.contentOrNull?.let { entry.argsBuffer.append(it) }
+                    }
+                }
+            }
+            // `finish_reason: "tool_calls"` is the natural point to emit a
+            // fully-assembled ToolCall chunk. Some servers don't set it, so
+            // we additionally flush on every delta with a non-empty name +
+            // args buffer — the agent loop only acts on the final emitted
+            // ToolCall per index, so re-emitting is harmless.
+            val finishReason = choice["finish_reason"]?.jsonPrimitive?.contentOrNull
+            if (finishReason != null || toolCalls?.isNotEmpty() == true) {
+                flushToolCalls(onChunk)
+            }
         }
         // Usage frame (sent just before [DONE] when stream_options.include_usage is on).
         element.jsonObject["usage"]?.let { usageEl ->
@@ -148,6 +198,43 @@ class OpenAiProvider(
             // signal that there are no more choices. Buffer this usage so we
             // can attach it to the final Done chunk.
             pendingUsage = usage
+        }
+    }
+
+    /**
+     * State for one in-flight tool call (index is the OpenAI `tool_calls[i].index`).
+     * Buffers `function.arguments` until we have a parseable JSON object.
+     */
+    private data class ToolCallAccumulator(
+        var id: String = "",
+        var name: String = "",
+        val argsBuffer: StringBuilder = StringBuilder(),
+    )
+
+    private val pendingToolCalls = mutableMapOf<Int, ToolCallAccumulator>()
+
+    private fun flushToolCalls(onChunk: (LlmChunk) -> Unit) {
+        if (pendingToolCalls.isEmpty()) return
+        // Emit one ToolCall chunk per accumulated index. We keep the entry
+        // in place (rather than removing) so subsequent deltas extending the
+        // same entry overwrite with a newer snapshot — the agent loop only
+        // dispatches once per (name, args) tuple.
+        pendingToolCalls.toSortedMap().forEach { (_, entry) ->
+            if (entry.name.isBlank()) return@forEach
+            val argsJson: JsonObject = if (entry.argsBuffer.isNotBlank()) {
+                try {
+                    val parsed = json.parseToJsonElement(entry.argsBuffer.toString())
+                    (parsed as? JsonObject) ?: buildJsonObject { }
+                } catch (_: Exception) {
+                    // Partial JSON — emit an empty object so the loop has
+                    // something to forward; the model will retry once more
+                    // deltas arrive (or the agent loop will retry).
+                    buildJsonObject { }
+                }
+            } else {
+                buildJsonObject { }
+            }
+            onChunk(LlmChunk.ToolCall(id = entry.id, name = entry.name, args = argsJson))
         }
     }
 
@@ -196,6 +283,7 @@ class OpenAiProvider(
         @SerialName("max_tokens") val maxTokens: Int? = null,
         val stream: Boolean,
         @SerialName("stream_options") val streamOptions: OpenAiStreamOptions? = null,
+        val tools: List<JsonElement>? = null,
     )
 
     companion object {

@@ -2,6 +2,7 @@ package com.sidekick.app.ui
 
 import com.sidekick.app.data.ProviderConfigEntity
 import com.sidekick.app.data.TeammateEntity
+import com.sidekick.app.data.ToolCallEntity
 import com.sidekick.app.data.TurnEntity
 import com.sidekick.app.provider.LlmException
 
@@ -18,12 +19,15 @@ import com.sidekick.app.provider.LlmException
  *                    until the database returns it.
  * @property messages Persisted turns in display order. Empty list before the
  *                    first load.
- * @property isStreaming True while a provider is mid-stream; controls the
+ * @property toolCallsByTurn Persisted tool-call rows, keyed by parent turn id.
+ *                            M3 uses this to render "Coder used read_file(...)"
+ *                            inline between assistant messages.
+ * @property isStreaming True while the agent loop is mid-flight; controls the
  *                       "stop" button and disables the input bar.
  * @property partialResponse The assistant's in-flight text. Empty string
  *                           when nothing is streaming; populated as chunks
  *                           arrive. Concatenated into the final
- *                           [TurnEntity] when [LlmChunk.Done] lands.
+ *                           [TurnEntity] when [com.sidekick.app.agent.AgentEvent.TextDone] lands.
  * @property error Last failure, if any. The UI renders it inline; the ViewModel
  *                 clears it on the next sendMessage.
  * @property activeProvider The currently-selected [ProviderConfigEntity],
@@ -34,6 +38,7 @@ data class ConversationUiState(
     val conversationId: Long? = null,
     val teammate: TeammateEntity? = null,
     val messages: List<TurnEntity> = emptyList(),
+    val toolCallsByTurn: Map<Long, List<ToolCallEntity>> = emptyMap(),
     val isStreaming: Boolean = false,
     val partialResponse: String = "",
     val error: LlmException? = null,
