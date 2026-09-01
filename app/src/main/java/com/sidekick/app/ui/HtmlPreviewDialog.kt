@@ -98,9 +98,19 @@ fun HtmlPreviewDialog(
  * Returns the full HTML string when it looks like a document, else null.
  */
 fun extractHtmlDocument(text: String): String? {
-    val lower = text.lowercase()
+    // Strip a leading markdown code fence if present — models almost always
+    // wrap HTML in ```html ... ``` or ``` ... ```. Unwrap it so the
+    // detector sees the raw document.
+    var html = text
+    val fenceRegex = Regex(
+        "^```(?:html|HTML)?\\s*\\n(.*)\\n```\\s*$",
+        setOf(RegexOption.DOT_MATCHES_ALL),
+    )
+    html = fenceRegex.find(text.trim())?.groupValues?.get(1) ?: html
+
+    val lower = html.lowercase()
     if (!lower.contains("<html") && !lower.contains("<!doctype")) return null
-    if (!lower.contains("<body") && !lower.contains("<head")) return null
-    if (text.length > 200_000) return null
-    return text
+    if (!lower.contains("<body") && !lower.contains("<head") && !lower.contains("<style")) return null
+    if (html.length > 200_000) return null
+    return html
 }

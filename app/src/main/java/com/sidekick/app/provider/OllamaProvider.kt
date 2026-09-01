@@ -85,6 +85,16 @@ class OllamaProvider(
                 temperature = request.temperature,
                 numPredict = request.maxTokens,
             ),
+            tools = request.tools?.takeIf { it.isNotEmpty() }?.map { tool ->
+                OllamaTool(
+                    type = "function",
+                    function = OllamaFunction(
+                        name = tool.name,
+                        description = tool.description,
+                        parameters = tool.parameters,
+                    ),
+                )
+            },
         )
         val json = json.encodeToString(OllamaRequest.serializer(), body)
         val url = baseUrl.trimEnd('/') + "/api/chat"
@@ -132,6 +142,26 @@ class OllamaProvider(
         if (done) {
             val usage = parseUsage(obj)
             onChunk(LlmChunk.Done(usage))
+            return
+        }
+
+        // Tool calls: Ollama emits `message.tool_calls` as an array of
+        // `{ function: { name, arguments } }` where `arguments` is a JSON
+        // STRING. Emit one LlmChunk.ToolCall per entry.
+        val toolCalls = obj["message"]?.jsonObject?.get("tool_calls")
+        if (toolCalls != null && toolCalls is kotlinx.serialization.json.JsonArray) {
+            toolCalls.forEach { tc ->
+                val fn = tc.jsonObject["function"]?.jsonObject ?: return@forEach
+                val name = fn["name"]?.jsonPrimitive?.contentOrNull ?: return@forEach
+                val argsStr = fn["arguments"]?.jsonPrimitive?.contentOrNull ?: "{}"
+                val args = try {
+                    json.parseToJsonElement(argsStr).jsonObject
+                } catch (e: Exception) {
+                    kotlinx.serialization.json.buildJsonObject { }
+                }
+                val id = tc.jsonObject["id"]?.jsonPrimitive?.contentOrNull ?: name
+                onChunk(LlmChunk.ToolCall(id = id, name = name, args = args))
+            }
             return
         }
 
@@ -185,11 +215,25 @@ class OllamaProvider(
     )
 
     @Serializable
+    private data class OllamaTool(
+        val type: String,
+        val function: OllamaFunction,
+    )
+
+    @Serializable
+    private data class OllamaFunction(
+        val name: String,
+        val description: String,
+        val parameters: kotlinx.serialization.json.JsonObject,
+    )
+
+    @Serializable
     private data class OllamaRequest(
         val model: String,
         val messages: List<OllamaMessage>,
         val stream: Boolean,
         val options: OllamaOptions,
+        val tools: List<OllamaTool>? = null,
     )
 
     companion object {
