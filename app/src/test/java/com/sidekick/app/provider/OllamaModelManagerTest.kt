@@ -3,7 +3,7 @@ package com.sidekick.app.provider
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
@@ -34,7 +34,7 @@ class OllamaModelManagerTest {
     }
 
     @Test
-    fun listLocalParsesModelNames() = runTest {
+    fun listLocalParsesModelNames() = runBlocking {
         // The server's /api/tags response shape: { "models": [{ "name": "...", ...}, ...] }
         server.enqueue(
             MockResponse()
@@ -67,7 +67,7 @@ class OllamaModelManagerTest {
     }
 
     @Test
-    fun listLocalDeDuplicatesByName() = runTest {
+    fun listLocalDeDuplicatesByName() = runBlocking {
         server.enqueue(
             MockResponse()
                 .setResponseCode(200)
@@ -89,7 +89,7 @@ class OllamaModelManagerTest {
     }
 
     @Test
-    fun listLocalReturnsEmptyWhenNoModelsField() = runTest {
+    fun listLocalReturnsEmptyWhenNoModelsField() = runBlocking {
         server.enqueue(
             MockResponse()
                 .setResponseCode(200)
@@ -101,7 +101,7 @@ class OllamaModelManagerTest {
     }
 
     @Test
-    fun listLocalSurfacesHttpErrors() = runTest {
+    fun listLocalSurfacesHttpErrors() = runBlocking {
         server.enqueue(
             MockResponse()
                 .setResponseCode(500)
@@ -130,7 +130,7 @@ class OllamaModelManagerTest {
     }
 
     @Test
-    fun pullEmitsPercentAndStatusProgressAndCompletesOnSuccess() = runTest {
+    fun pullEmitsPercentAndStatusProgressAndCompletesOnSuccess() = runBlocking {
         // Two progress lines (one with totals, one status-only), then success.
         val body = """
             {"status":"pulling manifest","digest":"sha256:abc"}
@@ -172,7 +172,7 @@ class OllamaModelManagerTest {
     }
 
     @Test
-    fun pullCompletesFlowOnSuccessLine() = runTest {
+    fun pullCompletesFlowOnSuccessLine() = runBlocking {
         val body = """{"status":"success"}"""
         server.enqueue(
             MockResponse()
@@ -199,7 +199,7 @@ class OllamaModelManagerTest {
     }
 
     @Test
-    fun pullSurfacesProviderErrorEnvelope() = runTest {
+    fun pullSurfacesProviderErrorEnvelope() = runBlocking {
         server.enqueue(
             MockResponse()
                 .setResponseCode(200)
