@@ -14,6 +14,17 @@
         android:supportsRtl="true"
         android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.Sidekick">
+
+        <!--
+          LiteRT-LM GPU backend (M7) requires these native libraries
+          to be declared even when `required="false"` — the loader
+          fails fast without them. Both ship with the LiteRT-LM AAR
+          on Google Maven; the manifest declaration just tells the
+          Android PackageManager they're safe to load.
+        -->
+        <uses-native-library android:name="libvndksupport.so" android:required="false"/>
+        <uses-native-library android:name="libOpenCL.so" android:required="false"/>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

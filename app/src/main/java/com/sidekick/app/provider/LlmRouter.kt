@@ -27,13 +27,21 @@ open class LlmRouter(
             modelNameInternal = it.modelName,
         )
     },
+    private val localOnDeviceFactory: (Provider.LocalOnDevice) -> LlmClient = {
+        LocalOnDeviceProvider(modelPath = it.modelPath, backend = it.backend)
+    },
 ) {
 
     private val cache = mutableMapOf<Provider, LlmClient>()
 
     /** Eagerly evict a provider's cached client — used when settings change. */
     open fun invalidate(provider: Provider) {
-        cache.remove(provider)
+        // Capture the removed entry so we can close native resources
+        // owned by LocalOnDeviceProvider (the on-device Engine holds a
+        // mmap of the model file — leaking across provider switches would
+        // leak memory until the process dies).
+        val evicted = cache.remove(provider)
+        (evicted as? LocalOnDeviceProvider)?.close()
     }
 
     /**
@@ -47,6 +55,7 @@ open class LlmRouter(
         val created = when (provider) {
             is Provider.LocalOllama -> ollamaFactory(provider)
             is Provider.CloudOpenAI -> openAiFactory(provider).withContext(context)
+            is Provider.LocalOnDevice -> localOnDeviceFactory(provider)
         }
         cache[provider] = created
         return created

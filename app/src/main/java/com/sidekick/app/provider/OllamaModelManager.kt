@@ -250,7 +250,7 @@ class OllamaModelManager(
          * to construct a manager first.
          */
         val CURATED_NAMES: List<String> = listOf(
-            "qwen2.5-coder:7b",
+            "qwen2.5-coder:1.5b",
             "qwen2.5-coder:3b",
             "llama3.1:8b",
             "phi4:14b",

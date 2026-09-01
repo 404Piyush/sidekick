@@ -17,6 +17,7 @@ import com.sidekick.app.data.dao.TeammateDao
 import com.sidekick.app.data.dao.ToolCallDao
 import com.sidekick.app.data.dao.TurnDao
 import com.sidekick.app.data.provideDatabase
+import com.sidekick.app.provider.Backend
 import com.sidekick.app.provider.ChatMessage
 import com.sidekick.app.provider.LlmClient
 import com.sidekick.app.provider.LlmException
@@ -438,10 +439,21 @@ class ConversationViewModel(
      */
     fun setProvider(config: ProviderConfigEntity) {
         ioScope.launch {
-            providerConfigDao.setActive(config.id)
-            val provider = config.toProvider()
+            // Insert-or-update: a fresh config from the Settings sheet has
+            // id == 0 (never persisted), so `update` would be a no-op and
+            // `getActive()` would keep returning null. Persist first, then
+            // flip the isActive flag, then surface it in state.
+            val persistedId = if (config.id == 0L) {
+                providerConfigDao.insert(config)
+            } else {
+                providerConfigDao.update(config)
+                config.id
+            }
+            providerConfigDao.setActive(persistedId)
+            val persisted = config.copy(id = persistedId)
+            val provider = persisted.toProvider()
             if (provider != null) router.invalidate(provider)
-            _state.value = _state.value.copy(activeProvider = config)
+            _state.value = _state.value.copy(activeProvider = persisted)
         }
     }
 
@@ -609,6 +621,12 @@ private fun jsonString(s: String): String {
  * Map a [ProviderConfigEntity] back to the sealed [Provider] used by
  * [LlmRouter]. Returns `null` for unknown `providerKind` values — callers
  * must surface that to the user rather than crash.
+ *
+ * M7 added `provider_kind = "local_on_device"` which resolves to
+ * [Provider.LocalOnDevice] using the persisted `modelPath` + `backend`
+ * columns. Older rows (pre-M7) won't have those columns populated, so
+ * the resulting [Provider] carries an empty `modelPath` and the router
+ * will surface an error when the user tries to chat through it.
  */
 fun ProviderConfigEntity.toProvider(): Provider? = when (providerKind) {
     "local_ollama" -> Provider.LocalOllama(baseUrl = baseUrl, modelName = modelName)
@@ -616,6 +634,10 @@ fun ProviderConfigEntity.toProvider(): Provider? = when (providerKind) {
         apiBaseUrl = baseUrl,
         apiKey = apiKey ?: "",
         modelName = modelName,
+    )
+    "local_on_device" -> Provider.LocalOnDevice(
+        modelPath = modelPath.orEmpty(),
+        backend = backend?.let { runCatching { Backend.valueOf(it) }.getOrNull() } ?: Backend.NPU,
     )
     else -> null
 }

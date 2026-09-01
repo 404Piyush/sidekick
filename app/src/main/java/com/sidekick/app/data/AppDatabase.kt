@@ -20,9 +20,10 @@ import com.sidekick.app.data.dao.TurnDao
  *  - [TeammateEntity]     — the seeded persona library
  *  - [ProviderConfigEntity] — provider endpoint + credentials
  *
- * Schema version is `2`. The 1 → 2 migration adds the `tool_calls` table
- * (see [MIGRATION_1_2]) and is registered alongside [provideDatabase] so
- * users who installed M2 keep their conversations after upgrading.
+ * Schema version is `3`.
+ *  - 1 → 2 ([MIGRATION_1_2]) added the `tool_calls` table.
+ *  - 2 → 3 ([MIGRATION_2_3]) added `modelPath` and `backend` columns on
+ *    `provider_configs` for the M7 on-device LiteRT-LM provider.
  *
  * The factory function [provideDatabase] is the single entry point M2+
  * callers (e.g. [com.sidekick.app.ui.ConversationViewModel]) use to
@@ -36,7 +37,7 @@ import com.sidekick.app.data.dao.TurnDao
         TeammateEntity::class,
         ProviderConfigEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -83,12 +84,32 @@ val MIGRATION_1_2: Migration = object : Migration(1, 2) {
 }
 
 /**
+ * Schema bump from v2 → v3: add two columns to `provider_configs` for
+ * the M7 on-device LiteRT-LM provider.
+ *  - `modelPath TEXT` — absolute path to a `.litertlm` model file
+ *    (null for non-on-device rows, since they don't need a local file)
+ *  - `backend TEXT` — serialised `Backend` enum name (`"NPU"`, `"GPU"`,
+ *    `"CPU"`); null for non-on-device rows
+ *
+ * Both columns are nullable with `NULL` as the default, so the migration
+ * is non-destructive: pre-M7 rows keep their existing `providerKind` /
+ * `baseUrl` / `modelName` / `apiKey` fields, and the new columns sit
+ * empty until the user opts into the on-device path via Settings.
+ */
+val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `provider_configs` ADD COLUMN `modelPath` TEXT")
+        db.execSQL("ALTER TABLE `provider_configs` ADD COLUMN `backend` TEXT")
+    }
+}
+
+/**
  * Build (or return the cached) [AppDatabase] for [context]. The 1 → 2
- * migration is registered explicitly — Room's
+ * and 2 → 3 migrations are registered explicitly — Room's
  * `fallbackToDestructiveMigration` is NOT used because real users may
  * have M2 data on devices and we don't want to wipe it.
  */
 fun provideDatabase(context: Context): AppDatabase = Room
     .databaseBuilder(context.applicationContext, AppDatabase::class.java, "sidekick.db")
-    .addMigrations(MIGRATION_1_2)
+    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
     .build()
