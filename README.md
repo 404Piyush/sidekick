@@ -4,13 +4,17 @@
 
 **Phone-first AI teammates. Build websites, write code, run research — from your phone, fully offline.**
 
-[Download APK](#-download) · [Features](#-features) · [Architecture](#-architecture) · [Build](#-build-from-source) · [License](#-license)
+**🌐 [sidekick.404piyush.me](https://sidekick.404piyush.me/) · [📦 Download APK](https://github.com/404Piyush/sidekick-android/releases/latest)**
+
+Three AI teammates. One phone. Zero cloud.
 
 </div>
 
 ---
 
 ## What is Sidekick?
+
+**[sidekick.404piyush.me](https://sidekick.404piyush.me/)** — try it, see screenshots, watch the demo.
 
 Sidekick turns your Android phone into a self-contained AI workstation with three teammates, each specialised for a different kind of work:
 
@@ -52,7 +56,7 @@ The whole project is MIT licensed, single-module Kotlin / Jetpack Compose, and s
 
 ## Screenshots
 
-> Coming soon. The app is currently shipping video assets for the iQOO Hackathon submission.
+Head to **[sidekick.404piyush.me](https://sidekick.404piyush.me/)** for the latest screenshots and the demo video.
 
 ---
 
@@ -184,5 +188,7 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 <div align="center">
-Built solo by <a href="https://github.com/404Piyush">@404Piyush</a>. MIT licensed.
+
+**[sidekick.404piyush.me](https://sidekick.404piyush.me/)** · Built solo by [@404Piyush](https://github.com/404Piyush) · MIT licensed
+
 </div>
