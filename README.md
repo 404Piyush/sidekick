@@ -189,6 +189,6 @@ MIT — see [LICENSE](LICENSE).
 
 <div align="center">
 
-**[sidekick.404piyush.me](https://sidekick.404piyush.me/)** · Built solo by [@404Piyush](https://github.com/404Piyush) · MIT licensed
+**[sidekick.404piyush.me](https://sidekick.404piyush.me/)** · MIT licensed
 
 </div>
